@@ -6,6 +6,8 @@ import { useProfilesStore } from '../stores/profiles'
 const settings = useSettingsStore()
 const profiles = useProfilesStore()
 
+const appVersion = __APP_VERSION__
+
 // P2P 自定义 TURN 临时输入
 const customTurnUrl = ref('')
 const customTurnUser = ref('')
@@ -392,6 +394,7 @@ function formatBytes(bytes: number): string {
     <!-- 自动更新 -->
     <div class="card setting-group">
       <h3>软件更新</h3>
+      <p class="hint" style="margin-bottom: 8px">当前版本: v{{ appVersion }}</p>
 
       <div v-if="updateStatus.status === 'idle'" class="update-row">
         <span class="text-muted">点击检查是否有新版本</span>

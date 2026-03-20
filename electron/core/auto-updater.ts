@@ -38,10 +38,16 @@ autoUpdater.on('checking-for-update', () => {
 })
 
 autoUpdater.on('update-available', (info: UpdateInfo) => {
+  let notes: string | undefined
+  if (typeof info.releaseNotes === 'string') {
+    notes = info.releaseNotes
+  } else if (Array.isArray(info.releaseNotes)) {
+    notes = info.releaseNotes.map(n => typeof n === 'string' ? n : n.note).filter(Boolean).join('\n')
+  }
   sendStatus({
     status: 'available',
     version: info.version,
-    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined
+    releaseNotes: notes
   })
 })
 
@@ -83,7 +89,11 @@ export async function checkForUpdates(): Promise<void> {
 }
 
 export async function downloadUpdate(): Promise<void> {
-  await autoUpdater.downloadUpdate()
+  try {
+    await autoUpdater.downloadUpdate()
+  } catch (err: any) {
+    sendStatus({ status: 'error', error: err.message })
+  }
 }
 
 export function installUpdate(): void {
