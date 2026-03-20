@@ -1,0 +1,20 @@
+{
+  "name": "mc-launcher-signaling",
+  "version": "1.0.0",
+  "description": "WebSocket 信令服务器 - MC 启动器 P2P 联机",
+  "main": "signaling.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/signaling.js",
+    "dev": "ts-node signaling.ts"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.0"
+  }
+}

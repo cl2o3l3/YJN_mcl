@@ -1,0 +1,219 @@
+/* === 暗色主题 (默认) === */
+:root, [data-theme="dark"] {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-card: #1f2940;
+  --bg-hover: #253350;
+  --bg-sidebar: #0f1829;
+  --accent: #4ecca3;
+  --accent-hover: #3ab88f;
+  --danger: #e74c3c;
+  --text-primary: #e4e4e4;
+  --text-secondary: #8892a4;
+  --text-muted: #5a6577;
+  --border: #2a3650;
+  --radius: 8px;
+  --titlebar-height: 36px;
+  --shadow-color: rgba(0, 0, 0, 0.25);
+  --overlay-bg: rgba(0, 0, 0, 0.55);
+  --scrollbar-thumb: #2a3650;
+  --scrollbar-thumb-hover: #5a6577;
+  color-scheme: dark;
+}
+
+/* === 亮色主题 === */
+[data-theme="light"] {
+  --bg-primary: #f0f2f7;
+  --bg-secondary: #e4e8ef;
+  --bg-card: #ffffff;
+  --bg-hover: #dce1ea;
+  --bg-sidebar: #e8ecf3;
+  --accent: #36a382;
+  --accent-hover: #2d8e72;
+  --danger: #d63031;
+  --text-primary: #1a2035;
+  --text-secondary: #505a6e;
+  --text-muted: #8892a4;
+  --border: #cbd2de;
+  --shadow-color: rgba(0, 0, 0, 0.08);
+  --overlay-bg: rgba(0, 0, 0, 0.35);
+  --scrollbar-thumb: #cbd2de;
+  --scrollbar-thumb-hover: #8892a4;
+  color-scheme: light;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 14px;
+  padding: 8px 16px;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-secondary {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.btn-secondary:hover { background: var(--border); }
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+input, select {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border 0.2s;
+}
+input:focus, select:focus {
+  border-color: var(--accent);
+}
+
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 16px;
+  border: 1px solid var(--border);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 100ms;
+}
+
+.card {
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+
+/* === 路由页面切换 === */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* === 模态弹窗 === */
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.2s ease;
+}
+.modal-enter-active .modal-body,
+.modal-leave-active .modal-body {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+.modal-enter-from .modal-body,
+.modal-leave-to .modal-body {
+  transform: scale(0.92);
+  opacity: 0;
+}
+
+/* === 列表项交错 === */
+.list-enter-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.list-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.list-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.list-leave-to {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.list-move {
+  transition: transform 0.25s ease;
+}
+
+/* === 面板展开 === */
+.panel-expand-enter-active {
+  transition: max-height 0.35s ease, opacity 0.25s ease 0.05s;
+  overflow: hidden;
+}
+.panel-expand-leave-active {
+  transition: max-height 0.25s ease, opacity 0.15s ease;
+  overflow: hidden;
+}
+.panel-expand-enter-from {
+  max-height: 0;
+  opacity: 0;
+}
+.panel-expand-enter-to {
+  max-height: 900px;
+}
+.panel-expand-leave-from {
+  max-height: 900px;
+}
+.panel-expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* === 淡入淡出 === */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* === @keyframes === */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(78, 204, 163, 0.4); }
+  50% { box-shadow: 0 0 16px 4px rgba(78, 204, 163, 0.25); }
+}
+
+@keyframes stripe-scroll {
+  0% { background-position: 0 0; }
+  100% { background-position: 30px 0; }
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
