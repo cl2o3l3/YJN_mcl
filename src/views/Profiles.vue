@@ -209,7 +209,19 @@ async function onDropImport(event: DragEvent) {
       </div>
       <div v-if="modpackImport.archiveName" class="selected-archive">当前文件：{{ modpackImport.archiveName }}</div>
       <div class="import-progress" v-if="modpackImport.progress">
-        <div class="progress-msg">{{ modpackImport.progress.message }}</div>
+        <!-- 步骤清单 -->
+        <div v-if="modpackImport.progress.steps && modpackImport.progress.steps.length > 0" class="import-steps">
+          <div v-for="(s, i) in modpackImport.progress.steps" :key="i" class="import-step" :class="'step-' + s.status">
+            <span class="step-icon">
+              <template v-if="s.status === 'done'">✓</template>
+              <template v-else-if="s.status === 'running'">{{ s.progress != null ? s.progress + '%' : '...' }}</template>
+              <template v-else-if="s.status === 'error'">✗</template>
+              <template v-else>•••</template>
+            </span>
+            <span class="step-text">{{ s.label }}</span>
+          </div>
+        </div>
+        <!-- 进度条 -->
         <div v-if="modpackImport.progress.fileProgress" class="progress-bar-wrap">
           <div class="progress-bar" :style="{ width: (modpackImport.progress.fileProgress.completed / Math.max(modpackImport.progress.fileProgress.total, 1) * 100) + '%' }"></div>
         </div>
@@ -217,6 +229,8 @@ async function onDropImport(event: DragEvent) {
           {{ modpackImport.progress.fileProgress.completed }}/{{ modpackImport.progress.fileProgress.total }} 文件
           · {{ formatSize(modpackImport.progress.fileProgress.speed) }}/s
         </div>
+        <!-- 无步骤时降级到纯文字 -->
+        <div v-if="!modpackImport.progress.steps" class="progress-msg">{{ modpackImport.progress.message }}</div>
       </div>
     </div>
     </Transition>
@@ -420,4 +434,23 @@ async function onDropImport(event: DragEvent) {
 .progress-bar-wrap { height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
 .progress-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
 .progress-info { font-size: 12px; color: var(--text-muted); }
+
+/* 安装步骤清单 */
+.import-steps { margin: 6px 0 8px; }
+.import-step {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 2px; font-size: 13px; color: var(--text-muted);
+}
+.import-step .step-icon {
+  width: 32px; text-align: center; flex-shrink: 0;
+  font-weight: 600; font-size: 11px;
+}
+.import-step .step-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-step.step-done { color: var(--accent); }
+.import-step.step-done .step-icon { font-size: 14px; }
+.import-step.step-running { color: var(--text-primary); font-weight: 500; }
+.import-step.step-running .step-icon { color: var(--accent); }
+.import-step.step-error { color: var(--danger); }
+.import-step.step-error .step-icon { color: var(--danger); }
+.import-step.step-waiting .step-icon { letter-spacing: -1px; }
 </style>

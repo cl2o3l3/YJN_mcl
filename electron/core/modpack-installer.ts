@@ -60,10 +60,17 @@ interface ResolvedModpack {
 
 // ========== 进度回调 ==========
 
+export interface InstallStep {
+  label: string
+  status: 'waiting' | 'running' | 'done' | 'error'
+  progress?: number  // 0-100
+}
+
 export interface ModpackInstallProgress {
   stage: 'downloading-pack' | 'parsing' | 'installing-game' | 'installing-loader' | 'downloading-files' | 'extracting-overrides' | 'done' | 'error'
   message: string
   fileProgress?: { total: number; completed: number; failed: number; speed: number }
+  steps?: InstallStep[]
 }
 
 // ========== 核心安装逻辑 ==========
@@ -85,27 +92,53 @@ export async function installModpack(
   const instanceDir = path.join(gameDir, 'instances', sanitizeDirName(profileName))
   await fsp.mkdir(instanceDir, { recursive: true })
 
+  // 步骤跟踪
+  const steps: InstallStep[] = [
+    { label: '解压整合包文件', status: 'waiting' },
+    { label: '解析整合包元数据', status: 'waiting' },
+    { label: '收集下载任务', status: 'waiting' },
+    { label: '下载游戏核心文件', status: 'waiting' },
+    { label: '下载 Mod 文件', status: 'waiting' },
+    { label: '提取 Natives', status: 'waiting' },
+    { label: '安装 Mod Loader', status: 'waiting' },
+    { label: '提取配置文件', status: 'waiting' },
+  ]
+  function emitSteps(stage: ModpackInstallProgress['stage'], message: string, fileProgress?: ModpackInstallProgress['fileProgress']) {
+    onProgress?.({ stage, message, fileProgress, steps: steps.map(s => ({ ...s })) })
+  }
+  function setStep(idx: number, status: InstallStep['status'], progress?: number) {
+    steps[idx].status = status
+    if (progress !== undefined) steps[idx].progress = progress
+  }
+
   // 2. 获取整合包压缩包（URL 则下载，本地路径则复制）
+  setStep(0, 'running')
   const isUrl = /^https?:\/\//i.test(source)
   const mrpackPath = path.join(instanceDir, mrpackFilename)
   if (isUrl) {
-    onProgress?.({ stage: 'downloading-pack', message: `正在下载整合包: ${mrpackFilename}` })
+    emitSteps('downloading-pack', `正在下载整合包: ${mrpackFilename}`)
     await downloadFile(source, mrpackPath)
   } else {
-    onProgress?.({ stage: 'downloading-pack', message: `正在复制整合包文件...` })
+    emitSteps('downloading-pack', `正在复制整合包文件...`)
     await fsp.copyFile(source, mrpackPath)
   }
+  setStep(0, 'done')
 
   // 3. 解析整合包元数据
-  onProgress?.({ stage: 'parsing', message: '正在解析整合包...' })
+  setStep(1, 'running')
+  emitSteps('parsing', '正在解析整合包...')
   const pack = await parsePackArchive(mrpackPath)
+  setStep(1, 'done')
 
   // 4. 提取 MC 版本和 Mod Loader 信息
   const mcVersion = pack.mcVersion
   const modLoader = pack.modLoader
+  // 如果没有 modLoader, 标记为 done
+  if (!modLoader) setStep(6, 'done')
 
-  // 5. 收集所有下载任务 (游戏文件 + mod 文件并行下载)
-  onProgress?.({ stage: 'installing-game', message: `正在准备下载任务...` })
+  // 5. 收集所有下载任务
+  setStep(2, 'running')
+  emitSteps('installing-game', `正在准备下载任务...`)
   const versionJson = await getVersionJson(mcVersion, instanceDir)
   const librariesDir = path.join(instanceDir, 'libraries')
   const libTasks = collectLibraryTasks(versionJson, librariesDir)
@@ -116,61 +149,76 @@ export async function installModpack(
   const assetTasks = await collectAssetTasks(versionJson, instanceDir)
   gameTasks.push(...assetTasks)
 
-  // Mod 文件下载任务
   const modTasks = pack.downloadTasks.map(task => ({
     ...task,
     path: path.isAbsolute(task.path) ? task.path : path.join(instanceDir, task.path)
   }))
 
-  // 合并所有任务并行下载
   const allTasks = [...gameTasks, ...modTasks]
   const gameCount = gameTasks.length
   const modCount = modTasks.length
+  setStep(2, 'done')
 
+  // 更新步骤标签显示数量
+  steps[3].label = `下载游戏核心文件 (${gameCount})`
+  steps[4].label = `下载 Mod 文件 (${modCount})`
+
+  // 6. 并行下载所有文件
   if (allTasks.length > 0) {
-    onProgress?.({
-      stage: 'downloading-files',
-      message: `正在下载 ${gameCount} 个游戏文件 + ${modCount} 个 Mod 文件...`
-    })
+    setStep(3, 'running')
+    setStep(4, 'running')
+    emitSteps('downloading-files', `正在下载 ${gameCount} 个游戏文件 + ${modCount} 个 Mod 文件...`)
 
     const result = await downloadBatch(allTasks, 32, (p) => {
-      onProgress?.({
-        stage: 'downloading-files',
-        message: `正在下载文件 (${p.completed}/${p.total}) — 游戏核心 ${gameCount} + Mod ${modCount}`,
-        fileProgress: { total: p.total, completed: p.completed, failed: p.failed, speed: p.speed }
+      const pct = Math.round(p.completed / Math.max(p.total, 1) * 100)
+      // 由于游戏文件和 mod 混合下载, 两个步骤同步更新进度
+      setStep(3, 'running', pct)
+      setStep(4, 'running', pct)
+      emitSteps('downloading-files', `正在下载文件 (${p.completed}/${p.total})`, {
+        total: p.total, completed: p.completed, failed: p.failed, speed: p.speed
       })
     })
+
+    setStep(3, result.failed.length > 0 ? 'error' : 'done', 100)
+    setStep(4, result.failed.length > 0 ? 'error' : 'done', 100)
 
     if (result.failed.length > 0) {
       console.warn(`[modpack] ${result.failed.length} 个文件下载失败:`, result.failed)
-      onProgress?.({
-        stage: 'downloading-files',
-        message: `警告: ${result.failed.length} 个文件下载失败，部分内容可能缺失`
-      })
+      emitSteps('downloading-files', `警告: ${result.failed.length} 个文件下载失败，部分内容可能缺失`)
     }
+  } else {
+    setStep(3, 'done')
+    setStep(4, 'done')
   }
 
-  // 6. 提取 natives
+  // 7. 提取 natives
+  setStep(5, 'running')
+  emitSteps('installing-game', '正在提取 Natives...')
   const nativesDir = path.join(instanceDir, 'versions', mcVersion, 'natives')
   await extractNatives(versionJson, librariesDir, nativesDir)
+  setStep(5, 'done')
 
-  // 7. 安装 Mod Loader (需要 vanilla version JSON 和 libraries 已下载)
+  // 8. 安装 Mod Loader
   if (modLoader) {
-    onProgress?.({ stage: 'installing-loader', message: `正在安装 ${modLoader.type} ${modLoader.version}...` })
+    setStep(6, 'running')
+    emitSteps('installing-loader', `正在安装 ${modLoader.type} ${modLoader.version}...`)
     await installModLoader(modLoader, mcVersion, instanceDir)
+    setStep(6, 'done')
   }
 
-  // 8. 提取 overrides 目录
-  onProgress?.({ stage: 'extracting-overrides', message: '正在提取配置文件...' })
+  // 9. 提取 overrides 目录
+  setStep(7, 'running')
+  emitSteps('extracting-overrides', '正在提取配置文件...')
   await extractOverrides(mrpackPath, instanceDir, pack.overridesDirs)
+  setStep(7, 'done')
 
-  // 9. 提取图标
+  // 10. 提取图标
   const iconPath = await extractIcon(mrpackPath, instanceDir)
 
-  // 10. 清理 .mrpack 文件
+  // 11. 清理 .mrpack 文件
   await fsp.rm(mrpackPath, { force: true }).catch(() => {})
 
-  onProgress?.({ stage: 'done', message: '整合包安装完成!' })
+  emitSteps('done', '整合包安装完成!')
 
   return {
     name: pack.name || profileName,

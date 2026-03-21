@@ -418,7 +418,8 @@ export function registerIpcHandlers() {
               completed: p.fileProgress.completed,
               failed: p.fileProgress.failed,
               speed: p.fileProgress.speed
-            } : undefined
+            } : undefined,
+            steps: p.steps
           })
         } catch { /* ignore */ }
       })

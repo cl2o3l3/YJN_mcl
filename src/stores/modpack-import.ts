@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useTasksStore } from './tasks'
+import { useTasksStore, type TaskStep } from './tasks'
 import { useNotificationsStore } from './notifications'
 import { useProfilesStore } from './profiles'
 
@@ -13,6 +13,7 @@ export interface ImportProgress {
     failed: number
     speed: number
   }
+  steps?: Array<{ label: string; status: 'waiting' | 'running' | 'done' | 'error'; progress?: number }>
 }
 
 export const useModpackImportStore = defineStore('modpack-import', () => {
@@ -55,12 +56,13 @@ export const useModpackImportStore = defineStore('modpack-import', () => {
     _taskId = tasksStore.addTask('modpack', profileName)
 
     _unsubProgress = window.api.modpack.onInstallProgress((p) => {
-      progress.value = p
+      progress.value = p as ImportProgress
       tasksStore.updateProgress(_taskId, {
         completed: p.fileProgress?.completed ?? 0,
         total: p.fileProgress?.total ?? 0,
         speed: p.fileProgress?.speed ?? 0,
-        message: p.message
+        message: p.message,
+        steps: p.steps as TaskStep[] | undefined
       })
     })
 

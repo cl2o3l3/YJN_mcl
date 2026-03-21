@@ -39,7 +39,19 @@ const typeLabels: Record<string, string> = {
         <span class="task-title">{{ t.title }}</span>
       </div>
       <div v-if="t.progress" class="task-progress">
-        <div v-if="t.progress.message" class="progress-message">{{ t.progress.message }}</div>
+        <!-- 步骤列表 -->
+        <div v-if="t.progress.steps && t.progress.steps.length > 0" class="step-list">
+          <div v-for="(s, i) in t.progress.steps" :key="i" class="step-row" :class="'step-' + s.status">
+            <span class="step-icon">
+              <template v-if="s.status === 'done'">✓</template>
+              <template v-else-if="s.status === 'running'">{{ s.progress != null ? s.progress + '%' : '...' }}</template>
+              <template v-else-if="s.status === 'error'">✗</template>
+              <template v-else>•••</template>
+            </span>
+            <span class="step-label">{{ s.label }}</span>
+          </div>
+        </div>
+        <!-- 总体进度条 -->
         <template v-if="t.progress.total > 0">
           <div class="progress-bar-wrap">
             <div class="progress-bar" :style="{ width: (t.progress.completed / Math.max(t.progress.total, 1) * 100) + '%' }"></div>
@@ -49,6 +61,7 @@ const typeLabels: Record<string, string> = {
             <span v-if="t.progress.speed > 0"> · {{ formatSpeed(t.progress.speed) }}</span>
           </div>
         </template>
+        <div v-else-if="!t.progress.steps" class="progress-message">{{ t.progress.message }}</div>
       </div>
       <div v-else class="task-running">运行中...</div>
     </div>
@@ -165,4 +178,31 @@ const typeLabels: Record<string, string> = {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* 步骤列表 */
+.step-list { margin: 6px 0 4px; }
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.step-icon {
+  width: 28px;
+  text-align: center;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 10px;
+}
+.step-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-done { color: var(--accent); }
+.step-done .step-icon { color: var(--accent); font-size: 12px; }
+.step-running { color: var(--text-primary); }
+.step-running .step-icon { color: var(--accent); }
+.step-error { color: var(--danger); }
+.step-error .step-icon { color: var(--danger); }
+.step-waiting { color: var(--text-muted); }
+.step-waiting .step-icon { letter-spacing: -1px; }
 </style>

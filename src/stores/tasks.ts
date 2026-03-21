@@ -1,12 +1,18 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+export interface TaskStep {
+  label: string
+  status: 'waiting' | 'running' | 'done' | 'error'
+  progress?: number
+}
+
 export interface TaskItem {
   id: string
   type: 'game' | 'resource' | 'modpack' | 'modloader'
   title: string
   status: 'running' | 'done' | 'error'
-  progress?: { completed: number; total: number; speed: number; message?: string }
+  progress?: { completed: number; total: number; speed: number; message?: string; steps?: TaskStep[] }
   error?: string
   startedAt: number
   completedAt?: number

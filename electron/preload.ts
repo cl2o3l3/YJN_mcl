@@ -153,8 +153,8 @@ const api = {
       }>,
     importLocal: () =>
       ipcRenderer.invoke('modpack:importLocal') as Promise<{ filePath: string; filename: string } | null>,
-    onInstallProgress: (callback: (event: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number } }) => void) => {
-      const handler = (_: unknown, e: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number } }) => callback(e)
+    onInstallProgress: (callback: (event: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number }; steps?: Array<{ label: string; status: string; progress?: number }> }) => void) => {
+      const handler = (_: unknown, e: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number }; steps?: Array<{ label: string; status: string; progress?: number }> }) => callback(e)
       ipcRenderer.on('modpack:installProgress', handler)
       return () => ipcRenderer.off('modpack:installProgress', handler)
     },
