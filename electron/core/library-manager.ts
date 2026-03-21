@@ -38,12 +38,15 @@ export function collectLibraryTasks(
 
     if (lib.downloads?.artifact) {
       const art = lib.downloads.artifact
-      tasks.push({
-        url: mirrorLibraryUrl(art.url),
-        path: path.join(librariesDir, art.path),
-        sha1: art.sha1,
-        size: art.size
-      })
+      // Forge 处理器输出的 artifact 的 url 为空字符串, 由 installer 本地生成, 跳过下载
+      if (art.url) {
+        tasks.push({
+          url: mirrorLibraryUrl(art.url),
+          path: path.join(librariesDir, art.path),
+          sha1: art.sha1,
+          size: art.size
+        })
+      }
     } else if (lib.name && lib.url) {
       // Fabric/Quilt 等使用 Maven URL
       const relPath = mavenToPath(lib.name)

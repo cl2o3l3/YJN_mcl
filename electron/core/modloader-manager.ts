@@ -59,6 +59,11 @@ export async function installFabricLoader(
   loaderVersion: string,
   gameDir: string
 ): Promise<string> {
+  // 0. 如果已安装，直接返回版本 ID
+  const expectedId = `fabric-loader-${loaderVersion}-${mcVersion}`
+  const existingJson = path.join(gameDir, 'versions', expectedId, `${expectedId}.json`)
+  if (fs.existsSync(existingJson)) return expectedId
+
   // 1. 确保 vanilla 版本 JSON 存在
   await getVersionJson(mcVersion, gameDir)
 
@@ -102,6 +107,11 @@ export async function installQuiltLoader(
   loaderVersion: string,
   gameDir: string
 ): Promise<string> {
+  // 0. 如果已安装，直接返回版本 ID
+  const expectedId = `quilt-loader-${loaderVersion}-${mcVersion}`
+  const existingJson = path.join(gameDir, 'versions', expectedId, `${expectedId}.json`)
+  if (fs.existsSync(existingJson)) return expectedId
+
   await getVersionJson(mcVersion, gameDir)
 
   const profileUrl = `https://meta.quiltmc.org/v3/versions/loader/${encodeURIComponent(mcVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
@@ -155,6 +165,12 @@ export async function installForgeLoader(
   gameDir: string,
   javaPath?: string
 ): Promise<string> {
+  // 0. 如果已安装，直接返回版本 ID
+  try {
+    const existing = await findInstalledForgeVersion(mcVersion, forgeVersion, gameDir)
+    return existing
+  } catch { /* 未找到，继续安装 */ }
+
   // 1. 确保 vanilla 版本 JSON 存在
   await getVersionJson(mcVersion, gameDir)
 
@@ -240,6 +256,12 @@ export async function installNeoForgeLoader(
   gameDir: string,
   javaPath?: string
 ): Promise<string> {
+  // 0. 如果已安装，直接返回版本 ID
+  try {
+    const existing = await findInstalledNeoForgeVersion(neoforgeVersion, gameDir)
+    return existing
+  } catch { /* 未找到，继续安装 */ }
+
   await getVersionJson(mcVersion, gameDir)
 
   const java = javaPath || await resolveJavaPath(17)
