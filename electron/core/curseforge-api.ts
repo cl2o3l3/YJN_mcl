@@ -165,6 +165,7 @@ export interface CurseForgeFileInfo {
   fileLength: number
   downloadUrl: string | null
   sha1?: string
+  fallbackUrls?: string[]
 }
 
 // ModLoader enum from CF API
@@ -351,7 +352,11 @@ export async function getFileInfo(fileId: string, modId: string): Promise<CurseF
   const data = await cfFetch<{ data: CfFile }>(`/mods/${modId}/files/${fileId}`)
   const file = data.data
   const sha1 = file.hashes.find(h => h.algo === 1)?.value
-  const downloadUrl = file.downloadUrl || buildForgeCdnUrl(file.id, file.fileName)
+  const cdnFallbacks = buildForgeCdnFallbackUrls(file.id, file.fileName)
+  const downloadUrl = file.downloadUrl || cdnFallbacks[0]
+  const fallbackUrls = file.downloadUrl
+    ? cdnFallbacks
+    : cdnFallbacks.slice(1)
 
   return {
     id: String(file.id),
@@ -360,13 +365,18 @@ export async function getFileInfo(fileId: string, modId: string): Promise<CurseF
     fileLength: file.fileLength,
     downloadUrl,
     sha1,
+    fallbackUrls: fallbackUrls.length > 0 ? fallbackUrls : undefined,
   }
 }
 
-function buildForgeCdnUrl(fileId: number, fileName: string): string {
+function buildForgeCdnFallbackUrls(fileId: number, fileName: string): string[] {
   const major = Math.floor(fileId / 1000)
   const minor = String(fileId % 1000).padStart(3, '0')
-  return `https://edge.forgecdn.net/files/${major}/${minor}/${encodeURIComponent(fileName)}`
+  const encoded = encodeURIComponent(fileName)
+  return [
+    `https://mediafilez.forgecdn.net/files/${major}/${minor}/${encoded}`,
+    `https://edge.forgecdn.net/files/${major}/${minor}/${encoded}`,
+  ]
 }
 
 /** 批量获取文件信息 (一次 POST 请求解析所有文件) */
@@ -376,7 +386,11 @@ export async function getFileInfoBatch(fileIds: number[]): Promise<CurseForgeFil
   const data = await cfPost<{ data: CfFile[] }>('/mods/files', { fileIds })
   return data.data.map(file => {
     const sha1 = file.hashes.find(h => h.algo === 1)?.value
-    const downloadUrl = file.downloadUrl || buildForgeCdnUrl(file.id, file.fileName)
+    const cdnFallbacks = buildForgeCdnFallbackUrls(file.id, file.fileName)
+    const downloadUrl = file.downloadUrl || cdnFallbacks[0]
+    const fallbackUrls = file.downloadUrl
+      ? cdnFallbacks
+      : cdnFallbacks.slice(1)
     return {
       id: String(file.id),
       modId: String(file.modId),
@@ -384,6 +398,7 @@ export async function getFileInfoBatch(fileIds: number[]): Promise<CurseForgeFil
       fileLength: file.fileLength,
       downloadUrl,
       sha1,
+      fallbackUrls: fallbackUrls.length > 0 ? fallbackUrls : undefined,
     }
   })
 }

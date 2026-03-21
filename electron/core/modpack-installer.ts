@@ -135,13 +135,21 @@ export async function installModpack(
       path: path.isAbsolute(task.path) ? task.path : path.join(instanceDir, task.path)
     }))
 
-    await downloadBatch(downloadTasks, 32, (p) => {
+    const result = await downloadBatch(downloadTasks, 32, (p) => {
       onProgress?.({
         stage: 'downloading-files',
         message: `正在下载文件 (${p.completed}/${p.total})`,
         fileProgress: { total: p.total, completed: p.completed, failed: p.failed, speed: p.speed }
       })
     })
+
+    if (result.failed.length > 0) {
+      console.warn(`[modpack] ${result.failed.length} 个文件下载失败:`, result.failed)
+      onProgress?.({
+        stage: 'downloading-files',
+        message: `警告: ${result.failed.length} 个文件下载失败，部分 mod 可能缺失`
+      })
+    }
   }
 
   // 8. 提取 overrides 目录
@@ -199,7 +207,8 @@ function buildResolvedMrpack(index: MrpackIndex, archivePath: string): ResolvedM
     url: f.downloads[0],
     path: path.join(path.dirname(archivePath), f.path),
     sha1: f.hashes.sha1,
-    size: f.fileSize
+    size: f.fileSize,
+    fallbackUrls: f.downloads.length > 1 ? f.downloads.slice(1) : undefined
   }))
 
   return {
@@ -235,7 +244,8 @@ async function buildResolvedCurseForgePack(manifest: CurseForgeManifest): Promis
       url: file.downloadUrl,
       path: path.join('mods', file.fileName),
       sha1: file.sha1,
-      size: file.fileLength
+      size: file.fileLength,
+      fallbackUrls: file.fallbackUrls
     }
   })
 
