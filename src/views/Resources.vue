@@ -429,7 +429,8 @@ async function onModpackInstall(version: ResourceVersion) {
       name: result.name,
       versionId: result.mcVersion,
       gameDir: result.instanceDir,
-      modLoader: result.modLoader as any
+      modLoader: result.modLoader as any,
+      iconPath: result.iconPath
     })
     await profiles.fetchProfiles()
 
@@ -809,6 +810,7 @@ function totalPages(): number {
   background: var(--accent);
   color: #fff;
 }
+
 
 .search-bar {
   display: flex;

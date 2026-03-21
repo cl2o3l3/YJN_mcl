@@ -143,10 +143,12 @@ const api = {
 
   // ========== 整合包 ==========
   modpack: {
-    install: (mrpackUrl: string, mrpackFilename: string, gameDir: string, profileName: string) =>
-      ipcRenderer.invoke('modpack:install', mrpackUrl, mrpackFilename, gameDir, profileName) as Promise<{
-        name: string; mcVersion: string; modLoader?: { type: string; version: string }; instanceDir: string
+    install: (source: string, mrpackFilename: string, gameDir: string, profileName: string) =>
+      ipcRenderer.invoke('modpack:install', source, mrpackFilename, gameDir, profileName) as Promise<{
+        name: string; mcVersion: string; modLoader?: { type: string; version: string }; instanceDir: string; iconPath?: string
       }>,
+    importLocal: () =>
+      ipcRenderer.invoke('modpack:importLocal') as Promise<{ filePath: string; filename: string } | null>,
     onInstallProgress: (callback: (event: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number } }) => void) => {
       const handler = (_: unknown, e: { stage: string; message: string; fileProgress?: { total: number; completed: number; failed: number; speed: number } }) => callback(e)
       ipcRenderer.on('modpack:installProgress', handler)

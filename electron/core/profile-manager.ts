@@ -30,6 +30,7 @@ export function createProfile(opts: {
   jvmArgs?: Partial<JvmArgs>
   modLoader?: ModLoaderInfo
   accountId?: string
+  iconPath?: string
 }): GameProfile {
   const profile: GameProfile = {
     id: randomUUID(),
@@ -42,7 +43,8 @@ export function createProfile(opts: {
     windowWidth: 1280,
     windowHeight: 720,
     accountId: opts.accountId || '',
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    iconPath: opts.iconPath
   }
 
   const profiles = store.get('profiles')

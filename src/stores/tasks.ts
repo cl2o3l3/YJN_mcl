@@ -6,7 +6,7 @@ export interface TaskItem {
   type: 'game' | 'resource' | 'modpack' | 'modloader'
   title: string
   status: 'running' | 'done' | 'error'
-  progress?: { completed: number; total: number; speed: number }
+  progress?: { completed: number; total: number; speed: number; message?: string }
   error?: string
   startedAt: number
   completedAt?: number

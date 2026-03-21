@@ -39,13 +39,16 @@ const typeLabels: Record<string, string> = {
         <span class="task-title">{{ t.title }}</span>
       </div>
       <div v-if="t.progress" class="task-progress">
-        <div class="progress-bar-wrap">
-          <div class="progress-bar" :style="{ width: (t.progress.completed / Math.max(t.progress.total, 1) * 100) + '%' }"></div>
-        </div>
-        <div class="progress-meta">
-          {{ t.progress.completed }}/{{ t.progress.total }}
-          <span v-if="t.progress.speed > 0"> · {{ formatSpeed(t.progress.speed) }}</span>
-        </div>
+        <div v-if="t.progress.message" class="progress-message">{{ t.progress.message }}</div>
+        <template v-if="t.progress.total > 0">
+          <div class="progress-bar-wrap">
+            <div class="progress-bar" :style="{ width: (t.progress.completed / Math.max(t.progress.total, 1) * 100) + '%' }"></div>
+          </div>
+          <div class="progress-meta">
+            {{ t.progress.completed }}/{{ t.progress.total }}
+            <span v-if="t.progress.speed > 0"> · {{ formatSpeed(t.progress.speed) }}</span>
+          </div>
+        </template>
       </div>
       <div v-else class="task-running">运行中...</div>
     </div>
@@ -119,6 +122,11 @@ const typeLabels: Record<string, string> = {
 }
 
 .task-progress { margin-top: 4px; }
+.progress-message {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
 .progress-bar-wrap {
   height: 4px;
   background: var(--bg-primary);

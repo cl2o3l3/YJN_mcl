@@ -88,6 +88,43 @@ async function cfFetch<T>(endpoint: string): Promise<T> {
   return JSON.parse(body) as T
 }
 
+async function cfPost<T>(endpoint: string, body: unknown): Promise<T> {
+  const key = apiKey || DEFAULT_CF_KEY
+  if (!key) throw new Error('CurseForge API key not configured')
+  const url = endpoint.startsWith('http') ? endpoint : `${BASE}${endpoint}`
+  const postData = JSON.stringify(body)
+
+  const responseBody = await new Promise<string>((resolve, reject) => {
+    const parsed = new URL(url)
+    const req = https.request({
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+      }
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        let errBody = ''
+        res.on('data', (d: Buffer) => errBody += d.toString())
+        res.on('end', () => reject(new Error(`CurseForge API error: ${res.statusCode} ${errBody}`)))
+        return
+      }
+      let data = ''
+      res.on('data', (d: Buffer) => data += d.toString())
+      res.on('end', () => resolve(data))
+    })
+    req.on('error', reject)
+    req.write(postData)
+    req.end()
+  })
+
+  return JSON.parse(responseBody) as T
+}
+
 // ========== CurseForge → 统一类型映射 ==========
 
 interface CfMod {
@@ -119,6 +156,15 @@ interface CfFile {
   dependencies: { modId: number; relationType: number }[]
   hashes: { value: string; algo: number }[] // 1=sha1, 2=md5
   isServerPack: boolean
+}
+
+export interface CurseForgeFileInfo {
+  id: string
+  modId: string
+  fileName: string
+  fileLength: number
+  downloadUrl: string | null
+  sha1?: string
 }
 
 // ModLoader enum from CF API
@@ -299,4 +345,45 @@ export async function getProjectVersions(
 export async function getVersion(fileId: string, modId: string): Promise<ResourceVersion> {
   const data = await cfFetch<{ data: CfFile }>(`/mods/${modId}/files/${fileId}`)
   return mapCfFileToVersion(data.data)
+}
+
+export async function getFileInfo(fileId: string, modId: string): Promise<CurseForgeFileInfo> {
+  const data = await cfFetch<{ data: CfFile }>(`/mods/${modId}/files/${fileId}`)
+  const file = data.data
+  const sha1 = file.hashes.find(h => h.algo === 1)?.value
+  const downloadUrl = file.downloadUrl || buildForgeCdnUrl(file.id, file.fileName)
+
+  return {
+    id: String(file.id),
+    modId: String(file.modId),
+    fileName: file.fileName,
+    fileLength: file.fileLength,
+    downloadUrl,
+    sha1,
+  }
+}
+
+function buildForgeCdnUrl(fileId: number, fileName: string): string {
+  const major = Math.floor(fileId / 1000)
+  const minor = String(fileId % 1000).padStart(3, '0')
+  return `https://edge.forgecdn.net/files/${major}/${minor}/${encodeURIComponent(fileName)}`
+}
+
+/** 批量获取文件信息 (一次 POST 请求解析所有文件) */
+export async function getFileInfoBatch(fileIds: number[]): Promise<CurseForgeFileInfo[]> {
+  if (fileIds.length === 0) return []
+
+  const data = await cfPost<{ data: CfFile[] }>('/mods/files', { fileIds })
+  return data.data.map(file => {
+    const sha1 = file.hashes.find(h => h.algo === 1)?.value
+    const downloadUrl = file.downloadUrl || buildForgeCdnUrl(file.id, file.fileName)
+    return {
+      id: String(file.id),
+      modId: String(file.modId),
+      fileName: file.fileName,
+      fileLength: file.fileLength,
+      downloadUrl,
+      sha1,
+    }
+  })
 }

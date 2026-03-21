@@ -28,6 +28,7 @@ export interface GameProfile {
   accountId: string
   createdAt: number
   lastPlayed?: number
+  iconPath?: string
 }
 
 // ========== 账号 ==========

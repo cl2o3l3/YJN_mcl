@@ -1,12 +1,35 @@
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProfilesStore } from '../stores/profiles'
+import { useNotificationsStore } from '../stores/notifications'
+import { useSettingsStore } from '../stores/settings'
+import { useModpackImportStore } from '../stores/modpack-import'
 import ProfileEditor from '../components/ProfileEditor.vue'
+import BlockIcon from '../components/BlockIcon.vue'
 import type { GameProfile, InstalledResource, ResourceType } from '../types'
 
+import iconFabric from '../assets/icons/fabric_loader.png'
+import iconForge from '../assets/icons/forge_loader.png'
+import iconNeoForge from '../assets/icons/neoforge_loader.png'
+import iconQuilt from '../assets/icons/quilt_loader.png'
+
 const profiles = useProfilesStore()
+const notifsStore = useNotificationsStore()
+const settings = useSettingsStore()
+const modpackImport = useModpackImportStore()
 const router = useRouter()
+
+const loaderIcons: Record<string, string> = {
+  fabric: iconFabric,
+  forge: iconForge,
+  neoforge: iconNeoForge,
+  quilt: iconQuilt,
+}
+
+function defaultLoaderIcon(p: GameProfile): string | null {
+  return (p.modLoader && loaderIcons[p.modLoader.type]) || null
+}
 const showEditor = ref(false)
 const editingProfile = ref<GameProfile | null>(null)
 
@@ -56,14 +79,129 @@ function closeEditor() {
   showEditor.value = false
   editingProfile.value = null
 }
+
+// ======== 导入整合包 ========
+const showImportPanel = ref(false)
+const dragActive = ref(false)
+const customImportGameDir = ref('')
+
+const importTargetDir = computed(() => customImportGameDir.value || settings.defaultGameDir || '将自动使用默认游戏目录')
+const usingCustomImportGameDir = computed(() => !!customImportGameDir.value)
+
+function formatSize(bytes: number): string {
+  if (bytes > 1_048_576) return (bytes / 1_048_576).toFixed(1) + ' MB'
+  if (bytes > 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return bytes + ' B'
+}
+
+function toggleImportPanel() {
+  if (modpackImport.active) return
+  showImportPanel.value = !showImportPanel.value
+  dragActive.value = false
+  if (!showImportPanel.value) {
+    customImportGameDir.value = ''
+  }
+}
+
+async function resolveInstallGameDir(): Promise<string> {
+  if (customImportGameDir.value) return customImportGameDir.value
+  if (settings.defaultGameDir) return settings.defaultGameDir
+  return window.api.system.defaultGameDir()
+}
+
+async function chooseImportGameDir() {
+  const fallbackDir = customImportGameDir.value || settings.defaultGameDir || await window.api.system.defaultGameDir()
+  const selectedDir = await window.api.dialog.selectDirectoryAt(fallbackDir)
+  if (!selectedDir) return
+  customImportGameDir.value = selectedDir
+}
+
+function resetImportGameDir() {
+  customImportGameDir.value = ''
+}
+
+async function doStartImport(filePath: string, filename: string) {
+  const gameDir = await resolveInstallGameDir()
+  showImportPanel.value = false
+  await modpackImport.startImport(filePath, filename, gameDir)
+}
+
+async function onBrowseModpack() {
+  const picked = await window.api.modpack.importLocal()
+  if (!picked) return
+  await doStartImport(picked.filePath, picked.filename)
+}
+
+function onDragOverImport() {
+  if (!modpackImport.active) dragActive.value = true
+}
+
+function onDragLeaveImport() {
+  dragActive.value = false
+}
+
+async function onDropImport(event: DragEvent) {
+  dragActive.value = false
+  if (modpackImport.active) return
+
+  const dropped = event.dataTransfer?.files?.[0] as (File & { path?: string }) | undefined
+  const filePath = dropped?.path
+  const filename = dropped?.name
+  if (!filePath || !filename) {
+    notifsStore.push('error', '无法读取拖入文件，请改用浏览按钮选择整合包')
+    return
+  }
+
+  await doStartImport(filePath, filename)
+}
 </script>
 
 <template>
   <div class="profiles-page">
     <div class="header">
       <h2>游戏实例</h2>
-      <button class="btn-primary" @click="openCreate">+ 新建实例 (选择版本)</button>
+      <div class="header-actions">
+        <button class="btn-secondary" @click="toggleImportPanel" :disabled="modpackImport.active">
+          {{ showImportPanel || modpackImport.active ? '收起导入面板' : '📥 导入整合包' }}
+        </button>
+        <button class="btn-primary" @click="openCreate">+ 新建实例</button>
+      </div>
     </div>
+
+    <!-- 导入整合包进度 -->
+    <Transition name="slide">
+    <div v-if="showImportPanel || modpackImport.active" class="card import-panel">
+      <label class="import-label">导入整合包</label>
+      <div
+        v-if="!modpackImport.active"
+        class="drop-zone"
+        :class="{ active: dragActive }"
+        @dragenter.prevent="onDragOverImport"
+        @dragover.prevent="onDragOverImport"
+        @dragleave.prevent="onDragLeaveImport"
+        @drop.prevent="onDropImport"
+      >
+        <div class="drop-zone-title">把整合包 ZIP 或 MRPACK 直接拖到这里</div>
+        <div class="drop-zone-meta">安装位置：{{ importTargetDir }}</div>
+        <div class="import-dir-actions">
+          <button class="btn-secondary" @click="chooseImportGameDir">选择游戏目录</button>
+          <button v-if="usingCustomImportGameDir" class="btn-secondary" @click="resetImportGameDir">恢复默认目录</button>
+        </div>
+        <button class="btn-primary" @click="onBrowseModpack">浏览整合包文件</button>
+      </div>
+      <div v-if="modpackImport.archiveName" class="selected-archive">当前文件：{{ modpackImport.archiveName }}</div>
+      <div class="import-progress" v-if="modpackImport.progress">
+        <div class="progress-msg">{{ modpackImport.progress.message }}</div>
+        <div v-if="modpackImport.progress.fileProgress" class="progress-bar-wrap">
+          <div class="progress-bar" :style="{ width: (modpackImport.progress.fileProgress.completed / Math.max(modpackImport.progress.fileProgress.total, 1) * 100) + '%' }"></div>
+        </div>
+        <div v-if="modpackImport.progress.fileProgress" class="progress-info">
+          {{ modpackImport.progress.fileProgress.completed }}/{{ modpackImport.progress.fileProgress.total }} 文件
+          · {{ formatSize(modpackImport.progress.fileProgress.speed) }}/s
+        </div>
+      </div>
+    </div>
+    </Transition>
 
     <div class="profile-list">
       <TransitionGroup name="list">
@@ -74,6 +212,14 @@ function closeEditor() {
         :class="{ selected: profiles.selectedId === p.id }"
         @click="profiles.selectedId = p.id"
       >
+        <img
+          v-if="p.iconPath"
+          class="profile-icon"
+          :src="'mc-icon:///' + encodeURIComponent(p.iconPath).replace(/%5C/g, '/').replace(/%3A/g, ':')"
+          alt=""
+        />
+        <img v-else-if="defaultLoaderIcon(p)" class="profile-icon" :src="defaultLoaderIcon(p)!" alt="" />
+        <BlockIcon v-else :size="48" />
         <div class="profile-main">
           <h3>{{ p.name }}</h3>
           <p class="text-muted">{{ p.versionId }}{{ p.modLoader ? ` · ${p.modLoader.type} ${p.modLoader.version}` : '' }}</p>
@@ -139,15 +285,23 @@ function closeEditor() {
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .profile-list { display: flex; flex-direction: column; gap: 8px; }
 .profile-card {
-  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
   cursor: pointer; transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
 }
 .profile-card.selected { border-color: var(--accent); }
 .profile-card:hover { background: var(--bg-hover); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.profile-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.profile-main { flex: 1; min-width: 0; }
 .profile-main h3 { font-size: 15px; margin-bottom: 2px; }
 .text-muted { color: var(--text-muted); font-size: 13px; }
 .small { font-size: 11px; }
-.profile-actions { display: flex; gap: 6px; }
+.profile-actions { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .profile-actions button { font-size: 12px; padding: 4px 10px; }
 .btn-sm { padding: 3px 8px !important; font-size: 11px !important; }
 .empty-state { text-align: center; padding: 40px; color: var(--text-secondary); }
@@ -185,4 +339,39 @@ function closeEditor() {
 .slide-enter-active, .slide-leave-active { transition: all .2s ease; overflow: hidden; }
 .slide-enter-from, .slide-leave-to { max-height: 0; opacity: 0; }
 .slide-enter-to, .slide-leave-from { max-height: 300px; opacity: 1; }
+
+/* header */
+.header-actions { display: flex; gap: 8px; }
+
+/* 导入整合包 */
+.import-panel { padding: 16px; margin-bottom: 12px; }
+.import-label { font-size: 14px; font-weight: 600; margin-bottom: 8px; display: block; }
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg-hover);
+  padding: 20px;
+  text-align: center;
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+}
+.drop-zone.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-hover));
+  transform: translateY(-1px);
+}
+.drop-zone-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.drop-zone-meta { font-size: 12px; color: var(--text-muted); }
+.import-dir-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.selected-archive { margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+.import-progress { padding: 4px 0; }
+.progress-msg { font-size: 13px; margin-bottom: 6px; color: var(--text-primary); }
+.progress-bar-wrap { height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+.progress-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
+.progress-info { font-size: 12px; color: var(--text-muted); }
 </style>

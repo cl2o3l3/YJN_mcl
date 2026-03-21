@@ -1,6 +1,7 @@
-import { app, BrowserWindow, session } from 'electron'
-import { fileURLToPath } from 'node:url'
+import { app, BrowserWindow, session, protocol, net } from 'electron'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
 import { registerIpcHandlers } from './ipc/handlers'
 import { registerP2pHandlers } from './ipc/p2p-handlers'
 import { registerUpdaterHandlers } from './ipc/updater-handlers'
@@ -64,6 +65,18 @@ app.on('activate', () => {
 })
 
 app.whenReady().then(() => {
+  // 注册 mc-icon: 协议，用于在渲染进程中加载本地图标文件
+  protocol.handle('mc-icon', (request) => {
+    // mc-icon:///C:/path/to/icon.png => file:///C:/path/to/icon.png
+    const filePath = decodeURIComponent(request.url.replace('mc-icon:///', '').replace('mc-icon://', ''))
+    const resolved = path.resolve(filePath)
+    // 只允许 .png/.jpg/.ico/.webp 图标文件
+    if (!/\.(png|jpe?g|ico|webp|gif)$/i.test(resolved) || !fs.existsSync(resolved)) {
+      return new Response('Not found', { status: 404 })
+    }
+    return net.fetch(pathToFileURL(resolved).href)
+  })
+
   // CSP 安全策略
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -73,7 +86,7 @@ app.whenReady().then(() => {
           "default-src 'self'; " +
           "script-src 'self'; " +
           "style-src 'self' 'unsafe-inline'; " +
-          "img-src 'self' data: https:; " +
+          "img-src 'self' data: https: mc-icon:; " +
           "connect-src 'self' ws://localhost:* https://api.modrinth.com https://api.curseforge.com https://login.microsoftonline.com https://authserver.mojang.com https://bmclapi2.bangbang93.com https://launchermeta.mojang.com https://piston-meta.mojang.com wss://mc-signaling.onrender.com https://mc-signaling.onrender.com wss://signal.yjn159.online https://signal.yjn159.online https://crafatar.com https://minotar.net https://*.workers.dev; " +
           "font-src 'self' data:; " +
           "object-src 'none'; " +

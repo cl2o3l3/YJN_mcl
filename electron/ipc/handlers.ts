@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell, net } from 'electron'
+import path from 'node:path'
 import { getVersionManifest, getVersionList, getVersionJson, getLocalVersions } from '../core/version-manager'
 import { collectLibraryTasks, collectNativeTasks, collectClientTask, extractNatives } from '../core/library-manager'
 import { collectAssetTasks } from '../core/asset-manager'
@@ -31,7 +32,6 @@ import type {
   ResourceSearchParams, ResourceFile, ResourceType, ResourcePlatform, ResourceVersion,
   LauncherSettings
 } from '../../src/types'
-import path from 'node:path'
 
 // 用于取消正在进行的 MS 登录
 let msLoginAbort: AbortController | null = null
@@ -396,9 +396,9 @@ export function registerIpcHandlers() {
     resolveDependencies(version, platform)))
 
   // ========== 整合包安装 ==========
-  ipcMain.handle('modpack:install', async (event, mrpackUrl: string, mrpackFilename: string, gameDir: string, profileName: string) => {
+  ipcMain.handle('modpack:install', async (event, source: string, mrpackFilename: string, gameDir: string, profileName: string) => {
     try {
-      const result = await installModpack(mrpackUrl, mrpackFilename, gameDir, profileName, (p) => {
+      const result = await installModpack(source, mrpackFilename, gameDir, profileName, (p) => {
         try {
           event.sender.send('modpack:installProgress', {
             stage: p.stage,
@@ -416,6 +416,20 @@ export function registerIpcHandlers() {
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : String(e))
     }
+  })
+
+  ipcMain.handle('modpack:importLocal', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) throw new Error('无法获取窗口')
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [{ name: 'Modpack', extensions: ['mrpack', 'zip'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+
+    const filePath = result.filePaths[0]
+    const filename = path.basename(filePath)
+    return { filePath, filename }
   })
 
   // ========== 窗口控制 ==========
