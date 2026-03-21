@@ -105,24 +105,25 @@ export async function installModpack(
   const modLoader = pack.modLoader
 
   // 5. 安装基础游戏版本 (libraries + assets + client + natives)
+  //    注意: 必须装到 instanceDir，因为 profile.gameDir = instanceDir，启动时也从这里找
   onProgress?.({ stage: 'installing-game', message: `正在安装 Minecraft ${mcVersion}...` })
-  const versionJson = await getVersionJson(mcVersion, gameDir)
-  const librariesDir = path.join(gameDir, 'libraries')
+  const versionJson = await getVersionJson(mcVersion, instanceDir)
+  const librariesDir = path.join(instanceDir, 'libraries')
   const libTasks = collectLibraryTasks(versionJson, librariesDir)
   const nativeTasks = collectNativeTasks(versionJson, librariesDir)
-  const clientTask = collectClientTask(versionJson, path.join(gameDir, 'versions'))
+  const clientTask = collectClientTask(versionJson, path.join(instanceDir, 'versions'))
   const gameTasks = [...libTasks, ...nativeTasks]
   if (clientTask) gameTasks.push(clientTask)
-  const assetTasks = await collectAssetTasks(versionJson, gameDir)
+  const assetTasks = await collectAssetTasks(versionJson, instanceDir)
   gameTasks.push(...assetTasks)
   await downloadBatch(gameTasks, 8)
-  const nativesDir = path.join(gameDir, 'versions', mcVersion, 'natives')
+  const nativesDir = path.join(instanceDir, 'versions', mcVersion, 'natives')
   await extractNatives(versionJson, librariesDir, nativesDir)
 
   // 6. 安装 Mod Loader
   if (modLoader) {
     onProgress?.({ stage: 'installing-loader', message: `正在安装 ${modLoader.type} ${modLoader.version}...` })
-    await installModLoader(modLoader, mcVersion, gameDir)
+    await installModLoader(modLoader, mcVersion, instanceDir)
   }
 
   // 7. 下载所有 mod 文件
