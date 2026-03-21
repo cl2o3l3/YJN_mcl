@@ -40,10 +40,12 @@ export function collectLibraryTasks(
       const art = lib.downloads.artifact
       // Forge 处理器输出的 artifact 的 url 为空字符串, 由 installer 本地生成, 跳过下载
       if (art.url) {
+        const destPath = path.join(librariesDir, art.path)
+        if (fs.existsSync(destPath)) continue
         const mirrored = mirrorLibraryUrl(art.url)
         tasks.push({
           url: mirrored,
-          path: path.join(librariesDir, art.path),
+          path: destPath,
           sha1: art.sha1,
           size: art.size,
           fallbackUrls: mirrored !== art.url ? [art.url] : undefined
@@ -52,21 +54,25 @@ export function collectLibraryTasks(
     } else if (lib.name && lib.url) {
       // Fabric/Quilt 等使用 Maven URL
       const relPath = mavenToPath(lib.name)
+      const destPath = path.join(librariesDir, relPath)
+      if (fs.existsSync(destPath)) continue
       const originalUrl = lib.url.endsWith('/') ? lib.url + relPath : lib.url + '/' + relPath
       const mirrored = mirrorLibraryUrl(originalUrl)
       tasks.push({
         url: mirrored,
-        path: path.join(librariesDir, relPath),
+        path: destPath,
         fallbackUrls: mirrored !== originalUrl ? [originalUrl] : undefined
       })
     } else if (lib.name) {
       // 无 downloads 且无 url, 使用 Mojang Maven
       const relPath = mavenToPath(lib.name)
+      const destPath = path.join(librariesDir, relPath)
+      if (fs.existsSync(destPath)) continue
       const originalUrl = `https://libraries.minecraft.net/${relPath}`
       const mirrored = mirrorLibraryUrl(originalUrl)
       tasks.push({
         url: mirrored,
-        path: path.join(librariesDir, relPath),
+        path: destPath,
         fallbackUrls: mirrored !== originalUrl ? [originalUrl] : undefined
       })
     }
@@ -93,14 +99,17 @@ export function collectNativeTasks(
     const resolvedClassifier = classifier.replace('${arch}', getArch() === 'x64' ? '64' : '32')
     const artifact = lib.downloads?.classifiers?.[resolvedClassifier]
     if (artifact) {
-      const mirrored = mirrorLibraryUrl(artifact.url)
-      tasks.push({
-        url: mirrored,
-        path: path.join(librariesDir, artifact.path),
-        sha1: artifact.sha1,
-        size: artifact.size,
-        fallbackUrls: mirrored !== artifact.url ? [artifact.url] : undefined
-      })
+      const destPath = path.join(librariesDir, artifact.path)
+      if (!fs.existsSync(destPath)) {
+        const mirrored = mirrorLibraryUrl(artifact.url)
+        tasks.push({
+          url: mirrored,
+          path: destPath,
+          sha1: artifact.sha1,
+          size: artifact.size,
+          fallbackUrls: mirrored !== artifact.url ? [artifact.url] : undefined
+        })
+      }
     }
   }
 
@@ -114,10 +123,12 @@ export function collectClientTask(
 ): DownloadTask | null {
   const dl = versionJson.downloads?.client
   if (!dl) return null
+  const destPath = path.join(versionsDir, versionJson.id, `${versionJson.id}.jar`)
+  if (fs.existsSync(destPath)) return null
   const mirrored = mirrorClientUrl(dl.url)
   return {
     url: mirrored,
-    path: path.join(versionsDir, versionJson.id, `${versionJson.id}.jar`),
+    path: destPath,
     sha1: dl.sha1,
     size: dl.size,
     fallbackUrls: mirrored !== dl.url ? [dl.url] : undefined
