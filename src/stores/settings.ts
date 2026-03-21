@@ -8,6 +8,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const theme = ref<'light' | 'dark' | 'system'>(
     (localStorage.getItem('mc-theme') as 'light' | 'dark' | 'system') || 'dark'
   )
+  const accentColor = ref<string | undefined>(undefined)
   const defaultGameDir = ref('')
   const gameDirs = ref<string[]>([])
   const defaultJavaPath = ref('')
@@ -32,6 +33,7 @@ export const useSettingsStore = defineStore('settings', () => {
   function persist(extra?: Partial<LauncherSettings>) {
     const data: Partial<LauncherSettings> = {
       theme: theme.value,
+      accentColor: accentColor.value,
       defaultGameDir: defaultGameDir.value,
       gameDirs: gameDirs.value,
       defaultJavaPath: defaultJavaPath.value,
@@ -57,6 +59,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // 先从持久化存储加载
     const saved = await window.api.settings.load()
     if (saved.theme) { theme.value = saved.theme; localStorage.setItem('mc-theme', saved.theme) }
+    if (saved.accentColor !== undefined) accentColor.value = saved.accentColor
     if (saved.defaultGameDir) defaultGameDir.value = saved.defaultGameDir
     if (saved.gameDirs?.length) gameDirs.value = saved.gameDirs
     if (saved.defaultJavaPath) defaultJavaPath.value = saved.defaultJavaPath
@@ -157,6 +160,33 @@ export const useSettingsStore = defineStore('settings', () => {
       resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
     }
     document.documentElement.setAttribute('data-theme', resolved)
+    applyAccentColor(accentColor.value)
+  }
+
+  function applyAccentColor(color?: string) {
+    const el = document.documentElement.style
+    if (color) {
+      el.setProperty('--accent', color)
+      el.setProperty('--accent-hover', darkenHex(color, 15))
+    } else {
+      el.removeProperty('--accent')
+      el.removeProperty('--accent-hover')
+    }
+  }
+
+  /** 将 hex 颜色降低亮度 */
+  function darkenHex(hex: string, amount: number): string {
+    const c = hex.replace('#', '')
+    const r = Math.max(0, parseInt(c.substring(0, 2), 16) - amount)
+    const g = Math.max(0, parseInt(c.substring(2, 4), 16) - amount)
+    const b = Math.max(0, parseInt(c.substring(4, 6), 16) - amount)
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+  }
+
+  function setAccentColor(color?: string) {
+    accentColor.value = color
+    applyAccentColor(color)
+    persist()
   }
 
   function addRelayServer(url: string) {
@@ -172,7 +202,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    mirrorSource, theme, defaultGameDir, gameDirs, defaultJavaPath,
+    mirrorSource, theme, accentColor, defaultGameDir, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,
@@ -180,6 +210,6 @@ export const useSettingsStore = defineStore('settings', () => {
     addGameDir, removeGameDir,
     addJavaPath, removeJavaPath, setClientIdValue, persist,
     addCustomTurn, removeCustomTurn, addRelayServer, removeRelayServer,
-    setTheme, applyTheme
+    setTheme, applyTheme, setAccentColor
   }
 })

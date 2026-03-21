@@ -8,6 +8,38 @@ const profiles = useProfilesStore()
 
 const appVersion = __APP_VERSION__
 
+// ========== 主题色预设 ==========
+const accentPresets = [
+  { color: '#4ecca3', label: '薄荷绿' },
+  { color: '#5b9bd5', label: '天空蓝' },
+  { color: '#e74c3c', label: '中国红' },
+  { color: '#f39c12', label: '琥珀橙' },
+  { color: '#9b59b6', label: '典雅紫' },
+  { color: '#1abc9c', label: '青碧' },
+  { color: '#e91e63', label: '玫瑰粉' },
+  // 用户测试预设
+  { color: '#722f37', label: '酒红' },
+  { color: '#cfb53b', label: '金色' },
+  { color: '#2e4e6e', label: '藏青' },
+]
+const customColorInput = ref(settings.accentColor || '#4ecca3')
+
+function pickPreset(color: string) {
+  settings.setAccentColor(color)
+  customColorInput.value = color
+}
+
+function onCustomColorChange(e: Event) {
+  const val = (e.target as HTMLInputElement).value
+  customColorInput.value = val
+  settings.setAccentColor(val)
+}
+
+function resetAccent() {
+  settings.setAccentColor(undefined)
+  customColorInput.value = '#4ecca3'
+}
+
 // P2P 自定义 TURN 临时输入
 const customTurnUrl = ref('')
 const customTurnUser = ref('')
@@ -154,6 +186,29 @@ function formatBytes(bytes: number): string {
         >
           <span class="theme-icon">{{ t.icon }}</span>
           <span>{{ t.label }}</span>
+        </button>
+      </div>
+
+      <!-- 强调色 -->
+      <div class="accent-section">
+        <label class="field-label">强调色</label>
+        <div class="accent-palette">
+          <button
+            v-for="p in accentPresets"
+            :key="p.color"
+            class="accent-swatch"
+            :class="{ active: settings.accentColor === p.color }"
+            :style="{ background: p.color }"
+            :title="p.label"
+            @click="pickPreset(p.color)"
+          />
+          <label class="accent-custom" title="自定义颜色">
+            <input type="color" :value="customColorInput" @input="onCustomColorChange" />
+            <span class="custom-icon">🎨</span>
+          </label>
+        </div>
+        <button v-if="settings.accentColor" class="btn-reset-accent" @click="resetAccent">
+          重置默认
         </button>
       </div>
     </div>
@@ -487,6 +542,37 @@ h2 { margin-bottom: 16px; }
   background: var(--bg-hover);
 }
 .theme-icon { font-size: 16px; }
+
+/* 强调色 */
+.accent-section { margin-top: 14px; }
+.accent-palette {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+.accent-swatch {
+  width: 28px; height: 28px; border-radius: 50%; border: 2.5px solid transparent;
+  cursor: pointer; transition: all 0.2s; padding: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+}
+.accent-swatch:hover { transform: scale(1.15); }
+.accent-swatch.active {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 4px currentColor;
+}
+.accent-custom {
+  position: relative; width: 28px; height: 28px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.accent-custom input[type="color"] {
+  position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%;
+  cursor: pointer; border: none; padding: 0;
+}
+.custom-icon { font-size: 18px; pointer-events: none; }
+.btn-reset-accent {
+  margin-top: 8px; padding: 4px 12px; font-size: 12px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  border-radius: 4px;
+}
+.btn-reset-accent:hover { color: var(--text-primary); background: var(--bg-hover); }
 
 .radio-group { display: flex; flex-direction: column; gap: 6px; }
 .radio-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; }

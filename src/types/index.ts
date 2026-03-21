@@ -217,6 +217,7 @@ export interface LauncherSettings {
   manualJavaPaths: string[]  // 手动添加的Java路径
   gameDirs: string[]         // 多游戏目录
   theme: 'light' | 'dark' | 'system'
+  accentColor?: string   // 自定义强调色 (hex)
   maxConcurrentDownloads: number
   defaultMinMemory: number
   defaultMaxMemory: number
@@ -533,6 +534,7 @@ export function getDefaultSettings(): LauncherSettings {
     manualJavaPaths: [],
     gameDirs: [],
     theme: 'dark',
+    accentColor: undefined,
     maxConcurrentDownloads: 8,
     defaultMinMemory: 512,
     defaultMaxMemory: 4096,
