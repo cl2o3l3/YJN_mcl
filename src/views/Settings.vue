@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { useProfilesStore } from '../stores/profiles'
 
@@ -111,26 +111,8 @@ async function installJava(distroId: string, majorVersion: number) {
 }
 
 // ========== 自动更新 ==========
-const updateStatus = ref<{
-  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
-  version?: string
-  releaseNotes?: string
-  progress?: { percent: number; bytesPerSecond: number; transferred: number; total: number }
-  error?: string
-  isPortable?: boolean
-}>({ status: 'idle' })
-
-let unsubUpdater: (() => void) | null = null
-
-onMounted(() => {
-  unsubUpdater = window.api.updater.onStatus((s: any) => {
-    updateStatus.value = s
-  })
-})
-
-onUnmounted(() => {
-  unsubUpdater?.()
-})
+import { globalUpdateStatus } from '../composables/useUpdateStatus'
+const updateStatus = globalUpdateStatus
 
 function checkUpdate() {
   window.api.updater.check()
