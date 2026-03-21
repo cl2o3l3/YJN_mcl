@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "mc-reconnect",
+  "version": "1.0.0",
+  "name": "MC Auto Reconnect",
+  "description": "Auto-reconnect after shared world host migration",
+  "authors": ["mc_M"],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.mcm.reconnect.ReconnectMod"]
+  },
+  "mixins": ["mc-reconnect.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": ">=1.20.0"
+  }
+}

@@ -16,6 +16,7 @@ const HEARTBEAT_TIMEOUT = 60_000
 const RELAY_RATE_LIMIT = 1_048_576 // 1MB/s per room
 const ROOM_CODE_LENGTH = 6
 const SERVER_START_TIME = Date.now()
+const PERSISTENT_ROOM_TTL = 24 * 60 * 60 * 1000 // 24h
 
 // ========== 类型 ==========
 
@@ -34,6 +35,14 @@ interface Room {
   peers: Map<string, Peer>
   relayBytes: number
   relayResetTime: number
+  // 持久房间支持
+  type: 'temporary' | 'persistent'
+  currentHostId: string | null    // 共享世界的当前 MC 服务器主机
+  worldMeta?: {                   // 共享世界元数据
+    worldName: string
+    mcVersion: string
+  }
+  emptyAt?: number                // 房间变空的时间戳 (TTL 起算点)
 }
 
 // ========== 状态 ==========
@@ -165,7 +174,9 @@ function handleMessage(peer: Peer, raw: string) {
         hostId: peer.id,
         peers: new Map([[peer.id, peer]]),
         relayBytes: 0,
-        relayResetTime: Date.now()
+        relayResetTime: Date.now(),
+        type: 'temporary',
+        currentHostId: null,
       }
 
       rooms.set(roomId, room)
@@ -322,6 +333,118 @@ function handleMessage(peer: Peer, raw: string) {
       break
     }
 
+    // ========== 持久房间 + 主机注册 (Shared World) ==========
+
+    case 'create-persistent-room': {
+      if (peer.roomId) {
+        sendTo(peer.ws, { type: 'error', message: '已在房间中' })
+        return
+      }
+      const playerName = String(msg.playerName || 'Player')
+      peer.name = playerName
+
+      const roomId = generateId()
+      let code = generateRoomCode()
+      while (codeToRoom.has(code)) code = generateRoomCode()
+
+      const room: Room = {
+        id: roomId,
+        code,
+        hostId: peer.id,
+        peers: new Map([[peer.id, peer]]),
+        relayBytes: 0,
+        relayResetTime: Date.now(),
+        type: 'persistent',
+        currentHostId: null,
+        worldMeta: msg.worldMeta ? {
+          worldName: String((msg.worldMeta as any).worldName || ''),
+          mcVersion: String((msg.worldMeta as any).mcVersion || ''),
+        } : undefined,
+      }
+
+      rooms.set(roomId, room)
+      codeToRoom.set(code, roomId)
+      peer.roomId = roomId
+
+      sendTo(peer.ws, { type: 'persistent-room-created', roomId, roomCode: code })
+      console.log(`[Room] Persistent room ${code} created by ${playerName}`)
+      break
+    }
+
+    case 'register-host': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room) { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+
+      // 原子先到先得: 只有当前无主机时才能注册
+      if (room.currentHostId && room.currentHostId !== peer.id) {
+        const hostPeer = room.peers.get(room.currentHostId)
+        if (hostPeer) {
+          sendTo(peer.ws, { type: 'host-conflict', currentHostId: room.currentHostId, currentHostName: hostPeer.name })
+          return
+        }
+        // 主机已断连但未清理，允许覆盖
+      }
+
+      room.currentHostId = peer.id
+      const mcPort = Number(msg.mcPort) || 0
+      sendTo(peer.ws, { type: 'host-registered', mcPort })
+      broadcastToRoom(room, {
+        type: 'host-changed',
+        hostId: peer.id,
+        hostName: peer.name,
+        mcPort
+      }, peer.id)
+      console.log(`[Room] ${peer.name} registered as host in ${room.code} (port: ${mcPort})`)
+      break
+    }
+
+    case 'unregister-host': {
+      if (!peer.roomId) return
+      const room = rooms.get(peer.roomId)
+      if (!room) return
+      if (room.currentHostId !== peer.id) return
+
+      room.currentHostId = null
+      broadcastToRoom(room, { type: 'host-changed', hostId: null, reason: 'unregistered' })
+      console.log(`[Room] ${peer.name} unregistered as host in ${room.code}`)
+      break
+    }
+
+    case 'query-host': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room) { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+
+      if (room.currentHostId) {
+        const hostPeer = room.peers.get(room.currentHostId)
+        sendTo(peer.ws, {
+          type: 'host-info',
+          hostId: room.currentHostId,
+          hostName: hostPeer?.name || 'Unknown',
+          worldMeta: room.worldMeta,
+        })
+      } else {
+        sendTo(peer.ws, { type: 'host-info', hostId: null, worldMeta: room.worldMeta })
+      }
+      break
+    }
+
+    // 存档传输信号
+    case 'save-offer':
+    case 'save-accept':
+    case 'save-reject': {
+      if (!peer.roomId) return
+      const room = rooms.get(peer.roomId)
+      if (!room) return
+      const targetId = String(msg.targetPeerId || '')
+      const target = room.peers.get(targetId)
+      if (target) {
+        sendTo(target.ws, { ...msg, fromPeerId: peer.id })
+      }
+      break
+    }
+
     default:
       sendTo(peer.ws, { type: 'error', message: `Unknown type: ${type}` })
   }
@@ -337,23 +460,40 @@ function removePeerFromRoom(peer: Peer) {
 
   room.peers.delete(peer.id)
 
-  // 房主离开 = 解散房间
-  if (room.hostId === peer.id) {
-    broadcastToRoom(room, { type: 'room-closed', reason: '房主已离开' })
-    // 清除所有 peer 的 roomId
-    for (const [, p] of room.peers) {
-      p.roomId = null
-    }
-    codeToRoom.delete(room.code)
-    rooms.delete(room.id)
-    console.log(`[Room] ${room.code} closed (host left)`)
-  } else {
+  // 如果这个 peer 是当前 MC 主机，广播主机变更
+  if (room.currentHostId === peer.id) {
+    room.currentHostId = null
+    broadcastToRoom(room, { type: 'host-changed', hostId: null, reason: 'disconnected' })
+    console.log(`[Room] Host ${peer.name} disconnected from ${room.code}`)
+  }
+
+  if (room.type === 'persistent') {
+    // 持久房间：房主离开不解散，只广播 peer-left
     broadcastToRoom(room, { type: 'peer-left', peerId: peer.id })
-    console.log(`[Room] ${peer.name} left ${room.code}`)
-    // 空房间清理
+    console.log(`[Room] ${peer.name} left persistent room ${room.code} (${room.peers.size} remaining)`)
+
+    // 房间变空时记录时间戳，启动 TTL
     if (room.peers.size === 0) {
+      room.emptyAt = Date.now()
+      console.log(`[Room] Persistent room ${room.code} is empty, TTL starts`)
+    }
+  } else {
+    // 临时房间：房主离开 = 解散房间
+    if (room.hostId === peer.id) {
+      broadcastToRoom(room, { type: 'room-closed', reason: '房主已离开' })
+      for (const [, p] of room.peers) {
+        p.roomId = null
+      }
       codeToRoom.delete(room.code)
       rooms.delete(room.id)
+      console.log(`[Room] ${room.code} closed (host left)`)
+    } else {
+      broadcastToRoom(room, { type: 'peer-left', peerId: peer.id })
+      console.log(`[Room] ${peer.name} left ${room.code}`)
+      if (room.peers.size === 0) {
+        codeToRoom.delete(room.code)
+        rooms.delete(room.id)
+      }
     }
   }
 }
@@ -424,6 +564,20 @@ setInterval(() => {
     }
   }
 }, HEARTBEAT_INTERVAL)
+
+// 持久房间 TTL 清理 (每 10 分钟检查)
+setInterval(() => {
+  const now = Date.now()
+  for (const [roomId, room] of rooms) {
+    if (room.type === 'persistent' && room.peers.size === 0 && room.emptyAt) {
+      if (now - room.emptyAt > PERSISTENT_ROOM_TTL) {
+        codeToRoom.delete(room.code)
+        rooms.delete(roomId)
+        console.log(`[Room] Persistent room ${room.code} expired (24h TTL)`)
+      }
+    }
+  }
+}, 10 * 60 * 1000)
 
 server.listen(PORT, () => {
   console.log(`[Signaling] Server running on port ${PORT}`)

@@ -87,7 +87,7 @@ app.whenReady().then(() => {
           "script-src 'self'; " +
           "style-src 'self' 'unsafe-inline'; " +
           "img-src 'self' data: https: mc-icon:; " +
-          "connect-src 'self' ws://localhost:* https://api.modrinth.com https://api.curseforge.com https://login.microsoftonline.com https://authserver.mojang.com https://bmclapi2.bangbang93.com https://launchermeta.mojang.com https://piston-meta.mojang.com wss://mc-signaling.onrender.com https://mc-signaling.onrender.com wss://signal.yjn159.online https://signal.yjn159.online https://crafatar.com https://minotar.net https://*.workers.dev; " +
+          "connect-src 'self' ws://localhost:* https://api.modrinth.com https://api.curseforge.com https://login.microsoftonline.com https://authserver.mojang.com https://bmclapi2.bangbang93.com https://launchermeta.mojang.com https://piston-meta.mojang.com https://api.papermc.io https://meta.fabricmc.net wss://mc-signaling.onrender.com https://mc-signaling.onrender.com wss://signal.yjn159.online https://signal.yjn159.online https://crafatar.com https://minotar.net https://*.workers.dev; " +
           "font-src 'self' data:; " +
           "object-src 'none'; " +
           "base-uri 'self'"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from 'vue'
 import { useMultiplayerStore } from '../stores/multiplayer'
+import { useSharedWorldStore } from '../stores/shared-world'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
 import { diffModLists } from '../services/mod-sync'
@@ -8,6 +9,7 @@ import SkinPreview from '../components/SkinPreview.vue'
 import type { ConnectionTier, MinecraftAccount, InstalledResource } from '../types'
 
 const mp = useMultiplayerStore()
+const sw = useSharedWorldStore()
 const auth = useAuthStore()
 const settings = useSettingsStore()
 
@@ -54,12 +56,13 @@ async function handleDiffMods() {
   modSyncLocalDiff.value = diffModLists(mp.hostModList, localMods)
 }
 
-// 模式选择: null = 主菜单, 'signaling' = 房间码模式, 'direct' = 直连模式
-// 如果已有房间/连接中，直接推断模式；否则为 null 让用户选
-const selectedMode = ref<'signaling' | 'direct' | null>(
-  mp.state !== 'idle'
-    ? (mp.manualPhase !== 'idle' ? 'direct' : 'signaling')
-    : null
+// 模式选择: null = 主菜单, 'signaling' = 房间码模式, 'direct' = 直连模式, 'shared' = 共享世界
+const selectedMode = ref<'signaling' | 'direct' | 'shared' | null>(
+  sw.isActive
+    ? 'shared'
+    : mp.state !== 'idle'
+      ? (mp.manualPhase !== 'idle' ? 'direct' : 'signaling')
+      : null
 )
 
 // 在模式内部: 'menu' = 创建/加入选择, 'create' = 创建中, 'join' = 加入中
@@ -77,6 +80,64 @@ watch(() => mp.state, (s) => {
     selectedMode.value = (mp.manualPhase !== 'idle') ? 'direct' : 'signaling'
   }
 }, { immediate: true })
+
+watch(() => sw.isActive, (active) => {
+  if (active && !selectedMode.value) {
+    selectedMode.value = 'shared'
+  }
+}, { immediate: true })
+
+// ========== 共享世界 ==========
+const swJoinCode = ref('')
+const swCreateForm = ref({
+  worldName: '',
+  mcVersion: '',
+  gameDir: '',
+})
+const swCreating = ref(false)
+const swJoining = ref(false)
+const swTab = ref<'create' | 'join' | 'list'>('list')
+
+async function handleCreateSharedWorld() {
+  if (!auth.selectedAccount) return
+  swCreating.value = true
+  try {
+    await sw.createWorld({
+      playerName: auth.selectedAccount.username,
+      gameDir: swCreateForm.value.gameDir || settings.defaultGameDir,
+      worldName: swCreateForm.value.worldName,
+      mcVersion: swCreateForm.value.mcVersion,
+    })
+  } catch { /* error in store */ }
+  swCreating.value = false
+}
+
+async function handleJoinSharedWorld() {
+  if (!auth.selectedAccount || !swJoinCode.value.trim()) return
+  swJoining.value = true
+  try {
+    await sw.joinWorld({
+      playerName: auth.selectedAccount.username,
+      roomCode: swJoinCode.value.trim().toUpperCase(),
+      gameDir: settings.defaultGameDir,
+    })
+  } catch { /* error in store */ }
+  swJoining.value = false
+}
+
+async function handleLeaveSharedWorld() {
+  await sw.leaveWorld()
+}
+
+function copySWCode() {
+  if (sw.roomCode) navigator.clipboard.writeText(sw.roomCode)
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
 
 // 回到主菜单
 function goHome() {
@@ -294,6 +355,16 @@ function rttClass(rtt: number): string {
           <div class="mode-content">
             <h3>直连模式</h3>
             <p>不依赖服务器，通过 QQ/微信互发连接码建立 P2P 连接。适合信令不可用时使用。</p>
+          </div>
+          <span class="mode-arrow">›</span>
+        </button>
+
+        <!-- 共享世界 -->
+        <button class="mode-card" @click="selectedMode = 'shared'; swTab = 'list'">
+          <div class="mode-icon">🌍</div>
+          <div class="mode-content">
+            <h3>共享世界</h3>
+            <p>多人共享存档，自动轮换主机。离线时存档自动迁移到在线玩家。</p>
           </div>
           <span class="mode-arrow">›</span>
         </button>
@@ -681,6 +752,165 @@ function rttClass(rtt: number): string {
           <div class="mt room-actions">
             <button class="btn-danger" @click="goHome">离开房间</button>
             <button class="btn-secondary" @click="toggleOverlay">{{ overlayVisible ? '关闭悬浮窗' : '显示悬浮窗' }}</button>
+          </div>
+        </div>
+      </template>
+    </template>
+
+    <!-- ==================== 共享世界模式 ==================== -->
+    <template v-if="selectedMode === 'shared'">
+      <button class="back-btn" @click="sw.isActive ? undefined : (selectedMode = null)">
+        {{ sw.isActive ? '' : '← 返回' }}
+      </button>
+
+      <!-- 未激活: 标签页切换 -->
+      <template v-if="!sw.isActive">
+        <div class="sw-tabs">
+          <button :class="['sw-tab', { active: swTab === 'list' }]" @click="swTab = 'list'">世界列表</button>
+          <button :class="['sw-tab', { active: swTab === 'create' }]" @click="swTab = 'create'">创建世界</button>
+          <button :class="['sw-tab', { active: swTab === 'join' }]" @click="swTab = 'join'">加入世界</button>
+        </div>
+
+        <!-- 世界列表 -->
+        <div v-if="swTab === 'list'" class="sw-section">
+          <div v-if="sw.worlds.length === 0" class="center-card">
+            <p class="text-muted">还没有共享世界，创建或加入一个吧</p>
+          </div>
+          <div v-for="w in sw.worlds" :key="w.roomCode" class="sw-world-card" @click="swJoinCode = w.roomCode; swTab = 'join'">
+            <div class="sw-world-icon">🌍</div>
+            <div class="sw-world-info">
+              <span class="sw-world-name">{{ w.worldName }}</span>
+              <span class="text-muted text-xs">{{ w.mcVersion }} · {{ w.roomCode }}</span>
+            </div>
+            <span class="mode-arrow">›</span>
+          </div>
+        </div>
+
+        <!-- 创建世界 -->
+        <div v-if="swTab === 'create'" class="sw-section">
+          <div class="card">
+            <h3>创建共享世界</h3>
+            <div class="sw-form">
+              <label>
+                世界名称
+                <input v-model="swCreateForm.worldName" placeholder="我的共享世界" class="input" />
+              </label>
+              <label>
+                MC 版本
+                <input v-model="swCreateForm.mcVersion" placeholder="1.21.4" class="input" />
+              </label>
+              <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
+              <button class="btn-primary" @click="handleCreateSharedWorld" :disabled="swCreating || !swCreateForm.worldName || !swCreateForm.mcVersion">
+                {{ swCreating ? '创建中...' : '创建世界' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 加入世界 -->
+        <div v-if="swTab === 'join'" class="sw-section">
+          <div class="card">
+            <h3>加入共享世界</h3>
+            <div class="sw-form">
+              <label>
+                房间码
+                <div class="input-row">
+                  <input v-model="swJoinCode" placeholder="输入 6 位房间码" class="input code-input" maxlength="6" />
+                  <button class="btn-primary" @click="handleJoinSharedWorld" :disabled="swJoining || swJoinCode.length < 6">
+                    {{ swJoining ? '加入中...' : '加入' }}
+                  </button>
+                </div>
+              </label>
+              <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- 已激活: 共享世界视图 -->
+      <template v-else>
+        <div class="sw-active-view">
+          <!-- 世界信息 -->
+          <div class="card sw-header-card">
+            <div class="room-header">
+              <div>
+                <h3>{{ sw.currentWorld?.worldName || '共享世界' }}</h3>
+                <div class="room-code-row">
+                  <span class="room-code" @click="copySWCode" title="点击复制">{{ sw.roomCode }}</span>
+                  <button class="btn-copy" @click="copySWCode">复制</button>
+                </div>
+              </div>
+              <div class="sw-status-badges">
+                <span class="sw-role-badge" :class="sw.isHost ? 'role-host' : 'role-client'">
+                  {{ sw.isHost ? '👑 主机' : '🎮 客户端' }}
+                </span>
+              </div>
+            </div>
+            <div class="sw-meta text-muted text-xs">
+              {{ sw.currentWorld?.mcVersion }}
+            </div>
+          </div>
+
+          <!-- 主机信息 -->
+          <div v-if="sw.hostInfo" class="card mt">
+            <h3>当前主机</h3>
+            <div class="sw-host-row">
+              <span class="sw-host-name">👑 {{ sw.hostInfo.peerName }}</span>
+              <span class="text-muted text-xs">{{ sw.hostInfo.mcPort ? 'MC:' + sw.hostInfo.mcPort : '' }}</span>
+            </div>
+          </div>
+          <div v-else class="card mt">
+            <h3>主机</h3>
+            <p class="text-muted">等待主机选举中...</p>
+          </div>
+
+          <!-- 选举状态 -->
+          <div v-if="sw.electionState !== 'connected' && sw.electionState !== 'hosting'" class="card mt">
+            <div class="center-card">
+              <div class="spinner" />
+              <p class="text-muted">{{ {
+                'joining': '正在加入房间...',
+                'querying-host': '正在查询主机...',
+                'becoming-host': '请在 MC 中加载世界并开启局域网...',
+                'transferring': '正在传输存档...',
+                'waiting-host': '等待新主机...',
+                'receiving-save': '正在接收存档...',
+              }[sw.electionState as string] || sw.electionState }}</p>
+            </div>
+          </div>
+
+          <!-- 传输进度 -->
+          <div v-if="sw.transferProgress" class="card mt">
+            <h3>存档传输</h3>
+            <div class="sw-progress">
+              <div class="sw-progress-bar">
+                <div class="sw-progress-fill" :style="{ width: (sw.transferProgress.total > 0 ? sw.transferProgress.current / sw.transferProgress.total * 100 : 0) + '%' }"></div>
+              </div>
+              <span class="text-xs">{{ (sw.transferProgress.total > 0 ? (sw.transferProgress.current / sw.transferProgress.total * 100) : 0).toFixed(0) }}% · {{ formatBytes(sw.transferProgress.current) }}/{{ formatBytes(sw.transferProgress.total) }}</span>
+            </div>
+          </div>
+
+          <!-- 主机控制面板 -->
+          <div v-if="sw.isHost" class="card mt">
+            <h3>主机控制</h3>
+            <p class="text-muted text-xs">你的 MC 客户端正在托管局域网世界。退出游戏时会自动迁移主机。</p>
+            <div class="sw-controls mt">
+              <button class="btn-secondary" @click="handleLeaveSharedWorld">🔄 移交房主并离开</button>
+            </div>
+          </div>
+
+          <!-- 日志 -->
+          <div class="card mt">
+            <h3>日志</h3>
+            <div ref="swLogContainer" class="log-box">
+              <div v-for="(log, i) in sw.logs" :key="i" class="log-line">{{ log }}</div>
+              <div v-if="sw.logs.length === 0" class="text-muted">暂无日志</div>
+            </div>
+          </div>
+
+          <!-- 离开 -->
+          <div class="mt room-actions">
+            <button class="btn-danger" @click="handleLeaveSharedWorld">离开世界</button>
           </div>
         </div>
       </template>
@@ -1104,4 +1334,64 @@ h4 { font-size: 14px; margin-bottom: 4px; }
   z-index: 10;
 }
 .current-account-card { position: relative; }
+
+/* 共享世界 */
+.sw-tabs {
+  display: flex; gap: 4px; margin-bottom: 12px;
+  background: var(--bg-secondary); border-radius: 8px; padding: 3px;
+}
+.sw-tab {
+  flex: 1; padding: 8px; border: none; background: none;
+  border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+  color: var(--text-muted); transition: all 0.15s;
+}
+.sw-tab.active { background: var(--bg-card); color: var(--text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.sw-tab:hover:not(.active) { color: var(--text-primary); }
+.sw-section { margin-top: 8px; }
+
+.sw-world-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); cursor: pointer;
+  margin-bottom: 6px; transition: border-color 0.2s, transform 0.15s;
+}
+.sw-world-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.sw-world-icon { font-size: 24px; flex-shrink: 0; }
+.sw-world-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.sw-world-name { font-size: 14px; font-weight: 600; }
+
+.sw-form { display: flex; flex-direction: column; gap: 10px; }
+.sw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
+
+.sw-header-card { }
+.sw-status-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.sw-role-badge, .sw-server-badge {
+  font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 600; white-space: nowrap;
+}
+.role-host { background: rgba(241, 196, 15, 0.18); color: #f1c40f; }
+.role-client { background: rgba(78, 204, 163, 0.18); color: var(--accent); }
+.server-running { background: rgba(46, 204, 113, 0.15); color: #27ae60; }
+.server-starting { background: rgba(241, 196, 15, 0.15); color: #f39c12; }
+.server-downloading { background: rgba(52, 152, 219, 0.15); color: #3498db; }
+.server-idle { background: rgba(149, 165, 166, 0.15); color: #95a5a6; }
+.sw-meta { margin-top: 6px; }
+
+.sw-host-row { display: flex; align-items: center; gap: 8px; }
+.sw-host-name { font-size: 14px; font-weight: 600; }
+
+.sw-progress { margin-top: 8px; }
+.sw-progress-bar {
+  height: 6px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden;
+}
+.sw-progress-fill {
+  height: 100%; background: var(--accent); border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.sw-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.sw-cmd-row { display: flex; gap: 8px; }
+.sw-cmd-row .input { flex: 1; }
+
+.sw-active-view { }
 </style>

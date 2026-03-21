@@ -234,6 +234,39 @@ export class SignalingClient {
     this.send({ type: 'request-turn-credentials' })
   }
 
+  // ========== 共享世界 (Persistent Room) ==========
+
+  createPersistentRoom(playerName: string, worldMeta: {
+    worldName: string; mcVersion: string
+  }): void {
+    this.lastPlayerName = playerName
+    this.send({ type: 'create-persistent-room', playerName, worldMeta })
+  }
+
+  registerHost(mcPort: number): void {
+    this.send({ type: 'register-host', mcPort })
+  }
+
+  unregisterHost(): void {
+    this.send({ type: 'unregister-host' })
+  }
+
+  queryHost(): void {
+    this.send({ type: 'query-host' })
+  }
+
+  sendSaveOffer(targetPeerId: string, size: number, sha1: string): void {
+    this.send({ type: 'save-offer', targetPeerId, size, sha1 })
+  }
+
+  sendSaveAccept(targetPeerId: string): void {
+    this.send({ type: 'save-accept', targetPeerId })
+  }
+
+  sendSaveReject(targetPeerId: string, reason: string): void {
+    this.send({ type: 'save-reject', targetPeerId, reason })
+  }
+
   /** 主动断开 */
   disconnect(): void {
     this.intentionalClose = true

@@ -10,6 +10,8 @@ import type {
 
 import type { LanGame } from './core/lan-detector'
 import type { NetworkDiagnostics } from '../src/types'
+import type { ServerCoreConfig, McServerConfig, McServerStatus, ServerCoreResult } from './core/mc-server-manager'
+import type { PackedSave, SaveInfo } from './core/save-sync'
 
 // 类型安全的 API 暴露给渲染进程
 const api = {
@@ -275,6 +277,50 @@ const api = {
       ipcRenderer.on('p2p:mcDisconnected', handler)
       return () => ipcRenderer.off('p2p:mcDisconnected', handler)
     },
+  },
+
+  // ========== MC Server 管理 ==========
+  server: {
+    downloadCore: (config: ServerCoreConfig, gameDir: string, javaPath?: string) =>
+      ipcRenderer.invoke('server:downloadCore', config, gameDir, javaPath) as Promise<ServerCoreResult>,
+    start: (config: McServerConfig) =>
+      ipcRenderer.invoke('server:start', config) as Promise<{ port: number }>,
+    stop: () =>
+      ipcRenderer.invoke('server:stop') as Promise<void>,
+    command: (command: string) =>
+      ipcRenderer.invoke('server:command', command) as Promise<void>,
+    status: () =>
+      ipcRenderer.invoke('server:status') as Promise<{ status: McServerStatus; port: number | null }>,
+    onLog: (callback: (message: string) => void) => {
+      const handler = (_: unknown, msg: string) => callback(msg)
+      ipcRenderer.on('server:log', handler)
+      return () => ipcRenderer.off('server:log', handler)
+    },
+    onStatusChanged: (callback: (status: McServerStatus) => void) => {
+      const handler = (_: unknown, status: McServerStatus) => callback(status)
+      ipcRenderer.on('server:statusChanged', handler)
+      return () => ipcRenderer.off('server:statusChanged', handler)
+    },
+  },
+
+  // ========== 存档管理 ==========
+  save: {
+    pack: (worldDir: string) =>
+      ipcRenderer.invoke('save:pack', worldDir) as Promise<PackedSave>,
+    unpack: (archivePath: string, targetDir: string, expectedSha1?: string) =>
+      ipcRenderer.invoke('save:unpack', archivePath, targetDir, expectedSha1) as Promise<void>,
+    info: (worldDir: string) =>
+      ipcRenderer.invoke('save:info', worldDir) as Promise<SaveInfo>,
+    list: (gameDir: string) =>
+      ipcRenderer.invoke('save:list', gameDir) as Promise<SaveInfo[]>,
+  },
+
+  // ========== 自动重连提示 (Plan C) ==========
+  reconnect: {
+    writeHint: (gameDir: string, host: string, port: number) =>
+      ipcRenderer.invoke('reconnect:writeHint', gameDir, host, port) as Promise<void>,
+    clearHint: (gameDir: string) =>
+      ipcRenderer.invoke('reconnect:clearHint', gameDir) as Promise<void>,
   },
 
   // ========== 自动更新 ==========

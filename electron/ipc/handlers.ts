@@ -27,6 +27,12 @@ import {
 } from '../core/resource-manager'
 import { setCurseForgeApiKey, isCurseForgeConfigured } from '../core/curseforge-api'
 import { installModpack } from '../core/modpack-installer'
+import {
+  downloadServerCore, startMcServer, stopMcServer,
+  sendServerCommand, getServerStatus,
+  type ServerCoreConfig, type McServerConfig
+} from '../core/mc-server-manager'
+import { packSave, unpackSave, getSaveInfo, listSaves } from '../core/save-sync'
 import type {
   DownloadProgress, MinecraftAccount, AuthProgressEvent, YggdrasilServerInfo,
   ResourceSearchParams, ResourceFile, ResourceType, ResourcePlatform, ResourceVersion,
@@ -431,6 +437,64 @@ export function registerIpcHandlers() {
     const filename = path.basename(filePath)
     return { filePath, filename }
   })
+
+  // ========== MC Server 管理 ==========
+  ipcMain.handle('server:downloadCore', safe(async (_, config: ServerCoreConfig, gameDir: string, javaPath?: string) => {
+    return downloadServerCore(config, gameDir, javaPath)
+  }))
+
+  ipcMain.handle('server:start', safe(async (_, config: McServerConfig) => {
+    return startMcServer(config)
+  }))
+
+  ipcMain.handle('server:stop', safe(async () => {
+    return stopMcServer()
+  }))
+
+  ipcMain.handle('server:command', safe((_, command: string) => {
+    sendServerCommand(command)
+  }))
+
+  ipcMain.handle('server:status', safe(() => {
+    return getServerStatus()
+  }))
+
+  // ========== 存档管理 ==========
+  ipcMain.handle('save:pack', safe(async (_, worldDir: string) => {
+    return packSave(worldDir)
+  }))
+
+  ipcMain.handle('save:unpack', safe(async (_, archivePath: string, targetDir: string, expectedSha1?: string) => {
+    return unpackSave(archivePath, targetDir, expectedSha1)
+  }))
+
+  ipcMain.handle('save:info', safe(async (_, worldDir: string) => {
+    return getSaveInfo(worldDir)
+  }))
+
+  ipcMain.handle('save:list', safe(async (_, gameDir: string) => {
+    return listSaves(gameDir)
+  }))
+
+  // ========== 自动重连提示 (Plan C) ==========
+  ipcMain.handle('reconnect:writeHint', safe(async (_, gameDir: string, host: string, port: number) => {
+    const fsp = await import('node:fs/promises')
+    const path = await import('node:path')
+    const filePath = path.join(gameDir, '.mc-reconnect.json')
+    await fsp.writeFile(filePath, JSON.stringify({
+      action: 'reconnect',
+      host,
+      port,
+      timestamp: Date.now(),
+    }), 'utf-8')
+  }))
+
+  ipcMain.handle('reconnect:clearHint', safe(async (_, gameDir: string) => {
+    const fsp = await import('node:fs/promises')
+    const path = await import('node:path')
+    const filePath = path.join(gameDir, '.mc-reconnect.json')
+    try { await fsp.unlink(filePath) } catch { /* ignore */ }
+  }))
 
   // ========== 窗口控制 ==========
   ipcMain.on('window:minimize', (event) => {
