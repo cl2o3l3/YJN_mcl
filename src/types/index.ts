@@ -29,6 +29,7 @@ export interface GameProfile {
   createdAt: number
   lastPlayed?: number
   iconPath?: string
+  tags?: string[]          // 实例标签/分组
 }
 
 // ========== 账号 ==========
@@ -218,6 +219,8 @@ export interface LauncherSettings {
   gameDirs: string[]         // 多游戏目录
   theme: 'light' | 'dark' | 'system'
   accentColor?: string   // 自定义强调色 (hex)
+  backgroundImage?: string  // 自定义背景图片路径
+  backgroundOpacity?: number // 背景不透明度 (0-1)
   maxConcurrentDownloads: number
   defaultMinMemory: number
   defaultMaxMemory: number
@@ -535,6 +538,8 @@ export function getDefaultSettings(): LauncherSettings {
     gameDirs: [],
     theme: 'dark',
     accentColor: undefined,
+    backgroundImage: undefined,
+    backgroundOpacity: 0.3,
     maxConcurrentDownloads: 8,
     defaultMinMemory: 512,
     defaultMaxMemory: 4096,

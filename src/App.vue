@@ -55,6 +55,13 @@ onMounted(async () => {
 
 <template>
   <div class="app-layout">
+    <!-- 自定义背景图层 -->
+    <div
+      v-if="settings.backgroundImage"
+      class="bg-layer"
+      :style="{ backgroundImage: 'url(mc-icon:///' + encodeURIComponent(settings.backgroundImage).replace(/%5C/g, '/').replace(/%3A/g, ':') + ')' }"
+    />
+    <div v-if="settings.backgroundImage" class="bg-overlay" :style="{ opacity: settings.backgroundOpacity }" />
     <TitleBar />
     <!-- 更新提示 toast -->
     <Transition name="toast">
@@ -87,11 +94,25 @@ onMounted(async () => {
   height: 100vh;
   background: var(--bg-primary);
   color: var(--text-primary);
+  position: relative;
+}
+/* 自定义背景 */
+.bg-layer {
+  position: absolute; inset: 0; z-index: 0;
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+}
+.bg-overlay {
+  position: absolute; inset: 0; z-index: 0;
+  background: var(--bg-primary);
+}
+.app-layout > :deep(.titlebar) {
+  position: relative; z-index: 1;
 }
 .app-body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative; z-index: 1;
 }
 .app-content {
   flex: 1;

@@ -31,6 +31,9 @@ const extraArgs = ref(props.profile?.jvmArgs.extraArgs?.join(' ') || '-Dlog4j2.f
 const gcArgsText = ref(props.profile?.jvmArgs.gcArgs?.join('\n') || GC_PRESETS.G1GC.join('\n'))
 const windowWidth = ref(props.profile?.windowWidth || 1280)
 const windowHeight = ref(props.profile?.windowHeight || 720)
+const iconPath = ref(props.profile?.iconPath || '')
+const tags = ref<string[]>(props.profile?.tags ? [...props.profile.tags] : [])
+const newTag = ref('')
 const totalMemory = ref(0)
 const javas = ref<{ path: string; version: string; majorVersion: number }[]>([])
 const scanningJava = ref(false)
@@ -86,6 +89,23 @@ function onGcChange() {
   }
 }
 
+async function selectIcon() {
+  const file = await window.api.dialog.selectFile([{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }])
+  if (file) iconPath.value = file
+}
+
+function clearIcon() { iconPath.value = '' }
+
+function addTag() {
+  const t = newTag.value.trim()
+  if (t && !tags.value.includes(t)) tags.value.push(t)
+  newTag.value = ''
+}
+
+function removeTag(tag: string) {
+  tags.value = tags.value.filter(t => t !== tag)
+}
+
 async function selectGameDir() {
   const dir = await window.api.dialog.selectDirectory()
   if (dir) gameDir.value = dir
@@ -131,7 +151,9 @@ async function save() {
       jvmArgs,
       modLoader,
       windowWidth: windowWidth.value,
-      windowHeight: windowHeight.value
+      windowHeight: windowHeight.value,
+      iconPath: iconPath.value || undefined,
+      tags: tags.value.length ? tags.value : undefined
     })
   } else {
     await profiles.createProfile({
@@ -152,6 +174,19 @@ async function save() {
   <div class="editor-overlay" @click.self="emit('close')">
     <div class="editor card">
       <h3>{{ profile ? '编辑实例' : '新建实例' }}</h3>
+
+      <!-- 实例图标 -->
+      <div class="form-group icon-group">
+        <label>实例图标</label>
+        <div class="icon-row">
+          <div class="icon-preview">
+            <img v-if="iconPath" :src="'mc-icon:///' + encodeURIComponent(iconPath).replace(/%5C/g, '/').replace(/%3A/g, ':')" alt="" />
+            <span v-else class="icon-placeholder">🖼️</span>
+          </div>
+          <button class="btn-secondary" @click="selectIcon">选择图标</button>
+          <button v-if="iconPath" class="btn-secondary" @click="clearIcon">清除</button>
+        </div>
+      </div>
 
       <div class="form-group">
         <label>实例名称</label>
@@ -258,6 +293,23 @@ async function save() {
         </div>
       </div>
 
+      <!-- 标签 -->
+      <div class="form-group">
+        <label>标签 <span class="text-hint">（可用于分组筛选）</span></label>
+        <div class="tag-editor">
+          <div class="tag-list" v-if="tags.length">
+            <span v-for="t in tags" :key="t" class="tag-badge">
+              {{ t }}
+              <button class="tag-x" @click="removeTag(t)">&times;</button>
+            </span>
+          </div>
+          <div class="tag-input-row">
+            <input v-model="newTag" placeholder="输入标签后回车" @keyup.enter="addTag" />
+            <button class="btn-secondary" @click="addTag" :disabled="!newTag.trim()">添加</button>
+          </div>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn-secondary" @click="emit('close')">取消</button>
         <button class="btn-primary" @click="save" :disabled="!name || !versionId">保存</button>
@@ -304,4 +356,31 @@ async function save() {
 textarea:focus { border-color: var(--accent); outline: none; }
 .readonly-input { background: var(--bg-secondary); color: var(--text-muted); cursor: not-allowed; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* 图标选择 */
+.icon-group { margin-bottom: 12px; }
+.icon-row { display: flex; align-items: center; gap: 8px; }
+.icon-preview {
+  width: 48px; height: 48px; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+  background: var(--bg-secondary); flex-shrink: 0;
+}
+.icon-preview img { width: 100%; height: 100%; object-fit: cover; }
+.icon-placeholder { font-size: 24px; }
+
+/* 标签编辑 */
+.tag-editor { display: flex; flex-direction: column; gap: 6px; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--accent); color: #fff; border-radius: 12px;
+  padding: 2px 10px; font-size: 12px;
+}
+.tag-x {
+  background: none; border: none; color: rgba(255,255,255,0.7); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.tag-x:hover { color: #fff; }
+.tag-input-row { display: flex; gap: 6px; }
+.tag-input-row input { flex: 1; }
 </style>

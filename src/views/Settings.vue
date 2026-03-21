@@ -213,6 +213,26 @@ function formatBytes(bytes: number): string {
       </div>
     </div>
 
+    <!-- 背景图片 -->
+    <div class="card setting-group">
+      <h3>背景图片</h3>
+      <div class="bg-preview-row">
+        <div class="bg-preview" v-if="settings.backgroundImage">
+          <img :src="'mc-icon:///' + encodeURIComponent(settings.backgroundImage).replace(/%5C/g, '/').replace(/%3A/g, ':')" alt="背景预览" />
+        </div>
+        <div class="bg-placeholder" v-else>无背景图</div>
+        <div class="bg-actions">
+          <button class="btn-secondary" @click="settings.chooseBackground">选择图片</button>
+          <button v-if="settings.backgroundImage" class="btn-secondary" @click="settings.clearBackground">清除</button>
+        </div>
+      </div>
+      <div v-if="settings.backgroundImage" class="bg-opacity-row">
+        <label>叠加层不透明度: {{ Math.round(settings.backgroundOpacity * 100) }}%</label>
+        <input type="range" :value="settings.backgroundOpacity" min="0" max="1" step="0.05" @input="settings.setBackgroundOpacity(Number(($event.target as HTMLInputElement).value))" />
+        <p class="hint">控制内容区域的遮罩浓度，数值越高内容越清晰</p>
+      </div>
+    </div>
+
     <!-- 下载源 -->
     <div class="card setting-group">
       <h3>下载源</h3>
@@ -573,6 +593,22 @@ h2 { margin-bottom: 16px; }
   border-radius: 4px;
 }
 .btn-reset-accent:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+/* 背景图片 */
+.bg-preview-row { display: flex; align-items: center; gap: 12px; }
+.bg-preview {
+  width: 120px; height: 68px; border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border); flex-shrink: 0;
+}
+.bg-preview img { width: 100%; height: 100%; object-fit: cover; }
+.bg-placeholder {
+  width: 120px; height: 68px; border-radius: 6px;
+  border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--text-muted); flex-shrink: 0;
+}
+.bg-actions { display: flex; flex-direction: column; gap: 6px; }
+.bg-opacity-row { margin-top: 10px; }
+.bg-opacity-row label { font-size: 13px; margin-bottom: 4px; display: block; }
 
 .radio-group { display: flex; flex-direction: column; gap: 6px; }
 .radio-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; }

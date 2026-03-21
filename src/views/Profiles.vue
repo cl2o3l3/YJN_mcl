@@ -20,6 +20,22 @@ const settings = useSettingsStore()
 const modpackImport = useModpackImportStore()
 const router = useRouter()
 
+// 标签筛选
+const activeTag = ref<string | null>(null)
+
+const allTags = computed(() => {
+  const set = new Set<string>()
+  for (const p of profiles.profiles) {
+    if (p.tags) p.tags.forEach(t => set.add(t))
+  }
+  return [...set].sort()
+})
+
+const filteredProfiles = computed(() => {
+  if (!activeTag.value) return profiles.profiles
+  return profiles.profiles.filter(p => p.tags?.includes(activeTag.value!))
+})
+
 const loaderIcons: Record<string, string> = {
   fabric: iconFabric,
   forge: iconForge,
@@ -235,10 +251,25 @@ async function onDropImport(event: DragEvent) {
     </div>
     </Transition>
 
+    <!-- 标签筛选栏 -->
+    <div v-if="allTags.length" class="tag-filter-bar">
+      <button
+        class="tag-filter-btn"
+        :class="{ active: !activeTag }"
+        @click="activeTag = null"
+      >全部</button>
+      <button
+        v-for="t in allTags" :key="t"
+        class="tag-filter-btn"
+        :class="{ active: activeTag === t }"
+        @click="activeTag = activeTag === t ? null : t"
+      >{{ t }}</button>
+    </div>
+
     <div class="profile-list">
       <TransitionGroup name="list">
       <div
-        v-for="p in profiles.profiles"
+        v-for="p in filteredProfiles"
         :key="p.id"
         class="card profile-card"
         :class="{ selected: profiles.selectedId === p.id }"
@@ -256,6 +287,9 @@ async function onDropImport(event: DragEvent) {
           <h3>{{ p.name }}</h3>
           <p class="text-muted">{{ p.versionId }}{{ p.modLoader ? ` · ${p.modLoader.type} ${p.modLoader.version}` : '' }}</p>
           <p class="text-muted small">{{ p.gameDir }}</p>
+          <div v-if="p.tags && p.tags.length" class="profile-tags">
+            <span v-for="t in p.tags" :key="t" class="profile-tag">{{ t }}</span>
+          </div>
         </div>
         <div class="profile-actions">
           <button class="btn-secondary btn-sm" @click.stop="toggleResources(p.id, p.gameDir)">
@@ -352,6 +386,27 @@ async function onDropImport(event: DragEvent) {
 .profile-actions button { font-size: 12px; padding: 4px 10px; }
 .btn-sm { padding: 3px 8px !important; font-size: 11px !important; }
 .empty-state { text-align: center; padding: 40px; color: var(--text-secondary); }
+
+/* 标签筛选栏 */
+.tag-filter-bar {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+}
+.tag-filter-btn {
+  padding: 3px 12px; border-radius: 12px; font-size: 12px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+}
+.tag-filter-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.tag-filter-btn.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+/* 实例标签 */
+.profile-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.profile-tag {
+  font-size: 10px; padding: 1px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
 
 /* 资源查看器面板 */
 .resources-panel {

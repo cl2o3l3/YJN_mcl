@@ -9,6 +9,8 @@ export const useSettingsStore = defineStore('settings', () => {
     (localStorage.getItem('mc-theme') as 'light' | 'dark' | 'system') || 'dark'
   )
   const accentColor = ref<string | undefined>(undefined)
+  const backgroundImage = ref<string | undefined>(undefined)
+  const backgroundOpacity = ref(0.3)
   const defaultGameDir = ref('')
   const gameDirs = ref<string[]>([])
   const defaultJavaPath = ref('')
@@ -34,6 +36,8 @@ export const useSettingsStore = defineStore('settings', () => {
     const data: Partial<LauncherSettings> = {
       theme: theme.value,
       accentColor: accentColor.value,
+      backgroundImage: backgroundImage.value,
+      backgroundOpacity: backgroundOpacity.value,
       defaultGameDir: defaultGameDir.value,
       gameDirs: gameDirs.value,
       defaultJavaPath: defaultJavaPath.value,
@@ -60,6 +64,8 @@ export const useSettingsStore = defineStore('settings', () => {
     const saved = await window.api.settings.load()
     if (saved.theme) { theme.value = saved.theme; localStorage.setItem('mc-theme', saved.theme) }
     if (saved.accentColor !== undefined) accentColor.value = saved.accentColor
+    if (saved.backgroundImage !== undefined) backgroundImage.value = saved.backgroundImage
+    if (saved.backgroundOpacity !== undefined) backgroundOpacity.value = saved.backgroundOpacity
     if (saved.defaultGameDir) defaultGameDir.value = saved.defaultGameDir
     if (saved.gameDirs?.length) gameDirs.value = saved.gameDirs
     if (saved.defaultJavaPath) defaultJavaPath.value = saved.defaultJavaPath
@@ -189,6 +195,21 @@ export const useSettingsStore = defineStore('settings', () => {
     persist()
   }
 
+  async function chooseBackground() {
+    const p = await window.api.dialog.selectFile([{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }])
+    if (p) { backgroundImage.value = p; persist() }
+  }
+
+  function clearBackground() {
+    backgroundImage.value = undefined
+    persist()
+  }
+
+  function setBackgroundOpacity(v: number) {
+    backgroundOpacity.value = v
+    persist()
+  }
+
   function addRelayServer(url: string) {
     if (url && !relayServers.value.includes(url)) {
       relayServers.value.push(url)
@@ -202,7 +223,8 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    mirrorSource, theme, accentColor, defaultGameDir, gameDirs, defaultJavaPath,
+    mirrorSource, theme, accentColor, backgroundImage, backgroundOpacity,
+    defaultGameDir, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,
@@ -210,6 +232,7 @@ export const useSettingsStore = defineStore('settings', () => {
     addGameDir, removeGameDir,
     addJavaPath, removeJavaPath, setClientIdValue, persist,
     addCustomTurn, removeCustomTurn, addRelayServer, removeRelayServer,
-    setTheme, applyTheme, setAccentColor
+    setTheme, applyTheme, setAccentColor,
+    chooseBackground, clearBackground, setBackgroundOpacity
   }
 })
