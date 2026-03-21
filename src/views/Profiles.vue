@@ -23,6 +23,91 @@ const router = useRouter()
 // 标签筛选
 const activeTag = ref<string | null>(null)
 
+// 批量选择
+const batchMode = ref(false)
+const selectedIds = ref(new Set<string>())
+const batchTagInput = ref('')
+const showBatchTagDialog = ref(false)
+
+function toggleBatchMode() {
+  batchMode.value = !batchMode.value
+  if (!batchMode.value) {
+    selectedIds.value.clear()
+    showBatchTagDialog.value = false
+  }
+}
+
+function toggleSelect(id: string) {
+  if (selectedIds.value.has(id)) {
+    selectedIds.value.delete(id)
+  } else {
+    selectedIds.value.add(id)
+  }
+}
+
+function selectAll() {
+  for (const p of filteredProfiles.value) {
+    selectedIds.value.add(p.id)
+  }
+}
+
+function deselectAll() {
+  selectedIds.value.clear()
+}
+
+async function batchAddTag() {
+  const tag = batchTagInput.value.trim()
+  if (!tag || selectedIds.value.size === 0) return
+  for (const id of selectedIds.value) {
+    const p = profiles.profiles.find(x => x.id === id)
+    if (p) {
+      const existingTags = p.tags || []
+      if (!existingTags.includes(tag)) {
+        await profiles.updateProfile(id, { tags: [...existingTags, tag] })
+      }
+    }
+  }
+  batchTagInput.value = ''
+  showBatchTagDialog.value = false
+  await profiles.fetchProfiles()
+}
+
+async function batchRemoveTag(tag: string) {
+  if (selectedIds.value.size === 0) return
+  for (const id of selectedIds.value) {
+    const p = profiles.profiles.find(x => x.id === id)
+    if (p && p.tags?.includes(tag)) {
+      const newTags = p.tags.filter(t => t !== tag)
+      await profiles.updateProfile(id, { tags: newTags.length ? newTags : undefined })
+    }
+  }
+  await profiles.fetchProfiles()
+}
+
+async function batchDelete() {
+  if (selectedIds.value.size === 0) return
+  if (!confirm(`确认删除所选的 ${selectedIds.value.size} 个实例？`)) return
+  for (const id of selectedIds.value) {
+    await profiles.deleteProfile(id)
+  }
+  selectedIds.value.clear()
+}
+
+// 批量选中的实例共有的标签
+const batchCommonTags = computed(() => {
+  if (selectedIds.value.size === 0) return []
+  const selected = profiles.profiles.filter(p => selectedIds.value.has(p.id))
+  if (selected.length === 0) return []
+  const first = new Set(selected[0].tags || [])
+  for (let i = 1; i < selected.length; i++) {
+    const tags = new Set(selected[i].tags || [])
+    for (const t of first) {
+      if (!tags.has(t)) first.delete(t)
+    }
+  }
+  return [...first]
+})
+
 const allTags = computed(() => {
   const set = new Set<string>()
   for (const p of profiles.profiles) {
@@ -195,6 +280,9 @@ async function onDropImport(event: DragEvent) {
     <div class="header">
       <h2>游戏实例</h2>
       <div class="header-actions">
+        <button class="btn-secondary" :class="{ active: batchMode }" @click="toggleBatchMode">
+          {{ batchMode ? '退出多选' : '☑ 多选' }}
+        </button>
         <button class="btn-secondary" @click="toggleImportPanel" :disabled="modpackImport.active">
           {{ showImportPanel || modpackImport.active ? '收起导入面板' : '📥 导入整合包' }}
         </button>
@@ -266,15 +354,51 @@ async function onDropImport(event: DragEvent) {
       >{{ t }}</button>
     </div>
 
+    <!-- 多选操作工具栏 -->
+    <Transition name="slide">
+    <div v-if="batchMode" class="card batch-toolbar">
+      <div class="batch-info">
+        <span>已选 <strong>{{ selectedIds.size }}</strong> 个实例</span>
+        <button class="btn-link" @click="selectAll">全选</button>
+        <button class="btn-link" @click="deselectAll">取消全选</button>
+      </div>
+      <div class="batch-actions">
+        <button class="btn-secondary btn-sm" @click="showBatchTagDialog = !showBatchTagDialog" :disabled="selectedIds.size === 0">
+          🏷 添加分组
+        </button>
+        <button class="btn-danger btn-sm" @click="batchDelete" :disabled="selectedIds.size === 0">
+          删除所选
+        </button>
+      </div>
+      <!-- 分组标签弹出 -->
+      <div v-if="showBatchTagDialog && selectedIds.size > 0" class="batch-tag-panel">
+        <div class="batch-tag-add">
+          <input v-model="batchTagInput" placeholder="输入分组名后回车添加" @keyup.enter="batchAddTag" />
+          <button class="btn-secondary btn-sm" @click="batchAddTag" :disabled="!batchTagInput.trim()">添加</button>
+        </div>
+        <div v-if="batchCommonTags.length" class="batch-tag-existing">
+          <span class="batch-tag-label">共有分组（点击移除）：</span>
+          <span v-for="t in batchCommonTags" :key="t" class="profile-tag removable" @click="batchRemoveTag(t)">
+            {{ t }} ×
+          </span>
+        </div>
+      </div>
+    </div>
+    </Transition>
+
     <div class="profile-list">
       <TransitionGroup name="list">
       <div
         v-for="p in filteredProfiles"
         :key="p.id"
         class="card profile-card"
-        :class="{ selected: profiles.selectedId === p.id }"
-        @click="profiles.selectedId = p.id"
+        :class="{ selected: !batchMode && profiles.selectedId === p.id, 'batch-selected': batchMode && selectedIds.has(p.id) }"
+        @click="batchMode ? toggleSelect(p.id) : (profiles.selectedId = p.id)"
       >
+        <!-- 批量选择复选框 -->
+        <div v-if="batchMode" class="batch-checkbox" :class="{ checked: selectedIds.has(p.id) }">
+          <span v-if="selectedIds.has(p.id)">✓</span>
+        </div>
         <img
           v-if="p.iconPath"
           class="profile-icon"
@@ -508,4 +632,43 @@ async function onDropImport(event: DragEvent) {
 .import-step.step-error { color: var(--danger); }
 .import-step.step-error .step-icon { color: var(--danger); }
 .import-step.step-waiting .step-icon { letter-spacing: -1px; }
+
+/* 批量操作 */
+.batch-toolbar {
+  padding: 10px 14px; margin-bottom: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+}
+.batch-info { display: flex; align-items: center; gap: 8px; font-size: 13px; flex: 1; }
+.batch-actions { display: flex; gap: 6px; }
+.btn-link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; text-decoration: underline;
+}
+.btn-link:hover { opacity: 0.8; }
+.batch-tag-panel {
+  width: 100%; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.batch-tag-add { display: flex; gap: 6px; }
+.batch-tag-add input { flex: 1; }
+.batch-tag-existing { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.batch-tag-label { font-size: 12px; color: var(--text-muted); }
+.profile-tag.removable { cursor: pointer; transition: all 0.15s; }
+.profile-tag.removable:hover { background: var(--danger); color: #fff; }
+
+/* 批量选择复选框 */
+.batch-checkbox {
+  width: 22px; height: 22px; border-radius: 4px; flex-shrink: 0;
+  border: 2px solid var(--border); display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: #fff; transition: all 0.15s;
+}
+.batch-checkbox.checked {
+  background: var(--accent); border-color: var(--accent);
+}
+.profile-card.batch-selected {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+}
+.header-actions .btn-secondary.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
 </style>

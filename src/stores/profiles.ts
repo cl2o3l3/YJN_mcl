@@ -41,7 +41,8 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   async function updateProfile(id: string, updates: Partial<GameProfile>) {
-    const result = await window.api.profiles.update(id, updates)
+    const plain = JSON.parse(JSON.stringify(updates))
+    const result = await window.api.profiles.update(id, plain)
     if (result) {
       const idx = profiles.value.findIndex(p => p.id === id)
       if (idx !== -1) profiles.value[idx] = result

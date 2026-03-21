@@ -8,6 +8,18 @@ const profiles = useProfilesStore()
 
 const appVersion = __APP_VERSION__
 
+// ========== 设置分类导航 ==========
+type SettingsSection = 'appearance' | 'game' | 'download' | 'network' | 'advanced' | null
+const activeSection = ref<SettingsSection>(null)
+
+const categories = [
+  { id: 'appearance' as const, icon: '🎨', title: '外观', desc: '主题、强调色、背景色、背景图片' },
+  { id: 'game' as const, icon: '🎮', title: '游戏', desc: 'Java 路径、默认内存、JVM 参数、游戏目录' },
+  { id: 'download' as const, icon: '📥', title: '下载', desc: '下载源、并行下载数、CurseForge API Key' },
+  { id: 'network' as const, icon: '🌐', title: '联机', desc: 'P2P 联机、信令服务器、STUN/TURN' },
+  { id: 'advanced' as const, icon: '⚙️', title: '高级', desc: 'Azure Client ID、软件更新' },
+]
+
 // ========== 主题色预设 ==========
 const accentPresets = [
   { color: '#4ecca3', label: '薄荷绿' },
@@ -210,8 +222,29 @@ function formatBytes(bytes: number): string {
 
 <template>
   <div class="settings-page">
-    <h2>设置</h2>
+    <div class="settings-header">
+      <button v-if="activeSection" class="btn-back" @click="activeSection = null">← 返回</button>
+      <h2>{{ activeSection ? categories.find(c => c.id === activeSection)!.title + '设置' : '设置' }}</h2>
+    </div>
 
+    <!-- 分类总览 -->
+    <div v-if="!activeSection" class="category-grid">
+      <div
+        v-for="cat in categories" :key="cat.id"
+        class="category-card card"
+        @click="activeSection = cat.id"
+      >
+        <span class="cat-icon">{{ cat.icon }}</span>
+        <div class="cat-info">
+          <h3>{{ cat.title }}</h3>
+          <p>{{ cat.desc }}</p>
+        </div>
+        <span class="cat-arrow">›</span>
+      </div>
+    </div>
+
+    <!-- ========== 外观 ========== -->
+    <template v-if="activeSection === 'appearance'">
     <!-- 主题 -->
     <div class="card setting-group">
       <h3>主题</h3>
@@ -294,17 +327,10 @@ function formatBytes(bytes: number): string {
         <p class="hint">控制内容区域的遮罩浓度，数值越高内容越清晰</p>
       </div>
     </div>
+    </template>
 
-    <!-- 下载源 -->
-    <div class="card setting-group">
-      <h3>下载源</h3>
-      <div class="radio-group">
-        <label><input type="radio" v-model="settings.mirrorSource" value="bmclapi" @change="settings.setMirrorSource(settings.mirrorSource)" /> BMCLAPI (推荐)</label>
-        <label><input type="radio" v-model="settings.mirrorSource" value="official" @change="settings.setMirrorSource(settings.mirrorSource)" /> 官方源</label>
-        <label><input type="radio" v-model="settings.mirrorSource" value="tsinghua" @change="settings.setMirrorSource(settings.mirrorSource)" /> 清华镜像</label>
-      </div>
-    </div>
-
+    <!-- ========== 游戏 ========== -->
+    <template v-if="activeSection === 'game'">
     <!-- 默认Java路径 -->
     <div class="card setting-group">
       <h3>默认 Java 路径</h3>
@@ -430,6 +456,19 @@ function formatBytes(bytes: number): string {
         </div>
       </Transition>
     </div>
+    </template>
+
+    <!-- ========== 下载 ========== -->
+    <template v-if="activeSection === 'download'">
+    <!-- 下载源 -->
+    <div class="card setting-group">
+      <h3>下载源</h3>
+      <div class="radio-group">
+        <label><input type="radio" v-model="settings.mirrorSource" value="bmclapi" @change="settings.setMirrorSource(settings.mirrorSource)" /> BMCLAPI (推荐)</label>
+        <label><input type="radio" v-model="settings.mirrorSource" value="official" @change="settings.setMirrorSource(settings.mirrorSource)" /> 官方源</label>
+        <label><input type="radio" v-model="settings.mirrorSource" value="tsinghua" @change="settings.setMirrorSource(settings.mirrorSource)" /> 清华镜像</label>
+      </div>
+    </div>
 
     <!-- 并行下载 -->
     <div class="card setting-group">
@@ -437,19 +476,6 @@ function formatBytes(bytes: number): string {
       <div class="memory-row">
         <label>{{ settings.downloadConcurrency }}</label>
         <input type="range" v-model.number="settings.downloadConcurrency" :min="1" :max="64" :step="1" />
-      </div>
-    </div>
-
-    <!-- Azure Client ID -->
-    <div class="card setting-group">
-      <h3>Azure Client ID</h3>
-      <p class="hint">用于微软账号登录的 Azure AD 应用 Client ID。如遇到 403 "Invalid app registration" 错误，请更换为已在 Xbox 开发者中心注册的 Client ID。</p>
-      <div class="input-row">
-        <input
-          :value="settings.clientId"
-          placeholder="c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
-          @change="settings.setClientIdValue(($event.target as HTMLInputElement).value)"
-        />
       </div>
     </div>
 
@@ -466,7 +492,10 @@ function formatBytes(bytes: number): string {
         />
       </div>
     </div>
+    </template>
 
+    <!-- ========== 联机 ========== -->
+    <template v-if="activeSection === 'network'">
     <!-- P2P 联机设置 -->
     <div class="card setting-group">
       <h3>P2P 联机</h3>
@@ -526,6 +555,22 @@ function formatBytes(bytes: number): string {
       <div class="input-row mt-sm">
         <input v-model="newRelayUrl" placeholder="wss://service-xxx.gz.apigw.tencentcs.com/release/" class="full-input" @keyup.enter="settings.addRelayServer(newRelayUrl.trim()); newRelayUrl = ''" />
         <button class="btn-secondary" @click="settings.addRelayServer(newRelayUrl.trim()); newRelayUrl = ''" :disabled="!newRelayUrl.trim()">添加</button>
+      </div>
+    </div>
+    </template>
+
+    <!-- ========== 高级 ========== -->
+    <template v-if="activeSection === 'advanced'">
+    <!-- Azure Client ID -->
+    <div class="card setting-group">
+      <h3>Azure Client ID</h3>
+      <p class="hint">用于微软账号登录的 Azure AD 应用 Client ID。如遇到 403 "Invalid app registration" 错误，请更换为已在 Xbox 开发者中心注册的 Client ID。</p>
+      <div class="input-row">
+        <input
+          :value="settings.clientId"
+          placeholder="c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
+          @change="settings.setClientIdValue(($event.target as HTMLInputElement).value)"
+        />
       </div>
     </div>
 
@@ -590,12 +635,34 @@ function formatBytes(bytes: number): string {
         <button class="btn-secondary" @click="checkUpdate">重试</button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .settings-page { max-width: 560px; }
-h2 { margin-bottom: 16px; }
+.settings-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.settings-header h2 { margin: 0; }
+.btn-back {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font-size: 15px; padding: 4px 8px; border-radius: 4px; transition: background 0.15s;
+}
+.btn-back:hover { background: var(--bg-hover); }
+
+/* 分类卡片网格 */
+.category-grid { display: flex; flex-direction: column; gap: 8px; }
+.category-card {
+  display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s; user-select: none;
+}
+.category-card:hover { background: var(--bg-hover); transform: translateY(-1px); box-shadow: 0 2px 8px var(--shadow-color, rgba(0,0,0,0.15)); }
+.cat-icon { font-size: 28px; flex-shrink: 0; }
+.cat-info { flex: 1; min-width: 0; }
+.cat-info h3 { font-size: 15px; margin: 0 0 2px; color: var(--text-primary); }
+.cat-info p { font-size: 12px; color: var(--text-muted); margin: 0; }
+.cat-arrow { font-size: 22px; color: var(--text-muted); flex-shrink: 0; transition: transform 0.2s; }
+.category-card:hover .cat-arrow { transform: translateX(3px); color: var(--accent); }
+
 .setting-group { margin-bottom: 12px; }
 .setting-group h3 { font-size: 15px; margin-bottom: 8px; }
 
