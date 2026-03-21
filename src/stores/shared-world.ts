@@ -10,7 +10,7 @@ import { SignalingClient } from '../services/signaling-client'
 import { HostElection, type ElectionState, type HostInfo, type WorldMeta } from '../services/host-election'
 import { WebRTCManager } from '../services/webrtc-manager'
 import type { TransferProgress } from '../services/save-transfer'
-import type { P2PPeer } from '../types'
+import type { ModLoaderInfo, P2PPeer } from '../types'
 import { useSettingsStore } from './settings'
 
 // ========== 类型 ==========
@@ -19,6 +19,7 @@ export interface SharedWorld {
   roomCode: string
   worldName: string
   mcVersion: string
+  modLoader?: ModLoaderInfo
   localSavePath?: string   // 本地存档缓存路径
   lastSyncTime?: number
   createdAt: number
@@ -96,6 +97,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     gameDir: string
     worldName: string
     mcVersion: string
+    modLoader?: ModLoaderInfo
   }): Promise<string> {
     error.value = ''
 
@@ -108,6 +110,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       const worldMeta: WorldMeta = {
         worldName: config.worldName,
         mcVersion: config.mcVersion,
+        modLoader: config.modLoader,
       }
 
       // 2. 创建选举 (LAN 模式回调)
@@ -162,6 +165,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         roomCode: code,
         worldName: config.worldName,
         mcVersion: config.mcVersion,
+        modLoader: config.modLoader,
         localSavePath: `${config.gameDir}/saves/${config.worldName}`,
         createdAt: Date.now(),
       }
@@ -173,6 +177,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     } catch (e: any) {
       error.value = e.message
       addLog(`创建失败: ${e.message}`)
+      await cleanupSession(false)
       throw e
     }
   }
@@ -195,6 +200,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       const worldMeta: WorldMeta = {
         worldName: '',
         mcVersion: '',
+        modLoader: undefined,
       }
 
       election = new HostElection(signaling, {
@@ -246,6 +252,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           roomCode: config.roomCode,
           worldName: meta.worldName,
           mcVersion: meta.mcVersion,
+          modLoader: meta.modLoader,
           createdAt: Date.now(),
         }
         currentWorld.value = world
@@ -256,6 +263,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     } catch (e: any) {
       error.value = e.message
       addLog(`加入失败: ${e.message}`)
+      await cleanupSession(false)
       throw e
     }
   }
@@ -277,15 +285,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         signaling.disconnect()
         signaling = null
       }
-      // 清理代理/广播/检测器
-      window.api.p2p.destroyAllProxies()
-      window.api.p2p.stopAllLanBroadcasts()
-      window.api.p2p.stopLanDetector()
-      if (currentGameDir) {
-        window.api.reconnect.clearHint(currentGameDir).catch(() => {})
-      }
-      for (const fn of cleanupFns) fn()
-      cleanupFns = []
+      await cleanupSession(false)
     } catch (e: any) {
       addLog(`离开时出错: ${e.message}`)
     } finally {
@@ -470,6 +470,39 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     if (myRole.value === 'client' && hostInfo.value && webrtcManager) {
       addLog(`正在与房主建立 P2P 连接...`)
       webrtcManager.connectToPeer(hostInfo.value.peerId, hostInfo.value.peerName, true)
+    }
+  }
+
+  async function cleanupSession(resetLogs = false) {
+    try {
+      window.api.p2p.destroyAllProxies().catch(() => {})
+      window.api.p2p.stopAllLanBroadcasts().catch(() => {})
+      window.api.p2p.stopLanDetector().catch(() => {})
+      if (currentGameDir) {
+        window.api.reconnect.clearHint(currentGameDir).catch(() => {})
+      }
+    } finally {
+      for (const fn of cleanupFns) fn()
+      cleanupFns = []
+      webrtcManager?.destroy()
+      webrtcManager = null
+      election?.destroy()
+      election = null
+      signaling?.disconnect()
+      signaling = null
+      electionState.value = 'idle'
+      hostInfo.value = null
+      myRole.value = null
+      transferProgress.value = null
+      currentWorld.value = null
+      roomCode.value = ''
+      peers.value = []
+      mcLanPort.value = 0
+      localPort.value = 0
+      currentGameDir = ''
+      if (resetLogs) {
+        logs.value = []
+      }
     }
   }
 

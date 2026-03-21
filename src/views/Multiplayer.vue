@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { computed, onMounted, ref, nextTick, watch } from 'vue'
 import { useMultiplayerStore } from '../stores/multiplayer'
 import { useSharedWorldStore } from '../stores/shared-world'
+import { useProfilesStore } from '../stores/profiles'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
 import { diffModLists } from '../services/mod-sync'
 import SkinPreview from '../components/SkinPreview.vue'
-import type { ConnectionTier, MinecraftAccount, InstalledResource } from '../types'
+import type { ConnectionTier, GameProfile, MinecraftAccount, InstalledResource } from '../types'
 
 const mp = useMultiplayerStore()
 const sw = useSharedWorldStore()
+const profiles = useProfilesStore()
 const auth = useAuthStore()
 const settings = useSettingsStore()
 
@@ -87,26 +89,134 @@ watch(() => sw.isActive, (active) => {
   }
 }, { immediate: true })
 
+onMounted(() => {
+  if (profiles.profiles.length === 0) {
+    profiles.fetchProfiles().catch(() => {})
+  }
+})
+
 // ========== 共享世界 ==========
 const swJoinCode = ref('')
+const swCreateMode = ref<'instance' | 'manual'>('instance')
 const swCreateForm = ref({
+  profileId: '',
   worldName: '',
   mcVersion: '',
+  loaderType: 'vanilla',
   gameDir: '',
 })
+const swJoinProfileId = ref('')
 const swCreating = ref(false)
 const swJoining = ref(false)
 const swTab = ref<'create' | 'join' | 'list'>('list')
 
+function profileLoaderType(profile: GameProfile): string {
+  return profile.modLoader?.type || 'vanilla'
+}
+
+function formatProfileLoader(profile?: GameProfile | null): string {
+  if (!profile?.modLoader) return '原版'
+  return `${profile.modLoader.type} ${profile.modLoader.version}`
+}
+
+function formatWorldLoader(modLoader?: GameProfile['modLoader'] | null): string {
+  if (!modLoader) return '原版'
+  return `${modLoader.type} ${modLoader.version}`
+}
+
+const swVersionOptions = computed(() =>
+  Array.from(new Set(profiles.profiles.map(profile => profile.versionId))).sort((a, b) => b.localeCompare(a))
+)
+
+const swLoaderOptions = computed(() => {
+  const source = swCreateForm.value.mcVersion
+    ? profiles.profiles.filter(profile => profile.versionId === swCreateForm.value.mcVersion)
+    : profiles.profiles
+  const options = new Set<string>(['vanilla'])
+  for (const profile of source) {
+    if (profile.modLoader?.type) {
+      options.add(profile.modLoader.type)
+    }
+  }
+  return Array.from(options)
+})
+
+const swFilteredProfiles = computed(() =>
+  profiles.profiles.filter(profile => {
+    const versionOk = !swCreateForm.value.mcVersion || profile.versionId === swCreateForm.value.mcVersion
+    const loaderOk = profileLoaderType(profile) === swCreateForm.value.loaderType
+    return versionOk && loaderOk
+  })
+)
+
+const swSelectedCreateProfile = computed(() =>
+  profiles.profiles.find(profile => profile.id === swCreateForm.value.profileId) || null
+)
+
+const swSelectedJoinProfile = computed(() =>
+  profiles.profiles.find(profile => profile.id === swJoinProfileId.value) || null
+)
+
+function applyCreateProfile(profile: GameProfile) {
+  swCreateForm.value.profileId = profile.id
+  swCreateForm.value.mcVersion = profile.versionId
+  swCreateForm.value.loaderType = profileLoaderType(profile)
+  swCreateForm.value.gameDir = profile.gameDir
+  if (!swCreateForm.value.worldName) {
+    swCreateForm.value.worldName = profile.name
+  }
+}
+
+watch(() => profiles.selected, (profile) => {
+  if (!profile) return
+  if (!swCreateForm.value.profileId) {
+    applyCreateProfile(profile)
+  }
+  if (!swJoinProfileId.value) {
+    swJoinProfileId.value = profile.id
+  }
+}, { immediate: true })
+
+watch(() => swCreateForm.value.profileId, (profileId) => {
+  const profile = profiles.profiles.find(item => item.id === profileId)
+  if (!profile) return
+  applyCreateProfile(profile)
+})
+
+watch(() => swCreateForm.value.mcVersion, (versionId) => {
+  // 仅手动模式下级联
+  if (swCreateMode.value !== 'manual') return
+  if (!versionId) return
+  if (!swLoaderOptions.value.includes(swCreateForm.value.loaderType)) {
+    swCreateForm.value.loaderType = 'vanilla'
+  }
+  const selected = swSelectedCreateProfile.value
+  if (selected && selected.versionId !== versionId) {
+    swCreateForm.value.profileId = ''
+    swCreateForm.value.gameDir = ''
+  }
+})
+
+watch(() => swCreateForm.value.loaderType, (loaderType) => {
+  // 仅手动模式下级联
+  if (swCreateMode.value !== 'manual') return
+  const selected = swSelectedCreateProfile.value
+  if (selected && profileLoaderType(selected) !== loaderType) {
+    swCreateForm.value.profileId = ''
+    swCreateForm.value.gameDir = ''
+  }
+})
+
 async function handleCreateSharedWorld() {
-  if (!auth.selectedAccount) return
+  if (!auth.selectedAccount || !swSelectedCreateProfile.value) return
   swCreating.value = true
   try {
     await sw.createWorld({
       playerName: auth.selectedAccount.username,
-      gameDir: swCreateForm.value.gameDir || settings.defaultGameDir,
+      gameDir: swSelectedCreateProfile.value.gameDir,
       worldName: swCreateForm.value.worldName,
-      mcVersion: swCreateForm.value.mcVersion,
+      mcVersion: swSelectedCreateProfile.value.versionId,
+      modLoader: swSelectedCreateProfile.value.modLoader,
     })
   } catch { /* error in store */ }
   swCreating.value = false
@@ -119,7 +229,7 @@ async function handleJoinSharedWorld() {
     await sw.joinWorld({
       playerName: auth.selectedAccount.username,
       roomCode: swJoinCode.value.trim().toUpperCase(),
-      gameDir: settings.defaultGameDir,
+      gameDir: swSelectedJoinProfile.value?.gameDir || settings.defaultGameDir,
     })
   } catch { /* error in store */ }
   swJoining.value = false
@@ -780,7 +890,7 @@ function rttClass(rtt: number): string {
             <div class="sw-world-icon">🌍</div>
             <div class="sw-world-info">
               <span class="sw-world-name">{{ w.worldName }}</span>
-              <span class="text-muted text-xs">{{ w.mcVersion }} · {{ w.roomCode }}</span>
+              <span class="text-muted text-xs">{{ w.mcVersion }} · {{ formatWorldLoader(w.modLoader) }} · {{ w.roomCode }}</span>
             </div>
             <span class="mode-arrow">›</span>
           </div>
@@ -790,17 +900,76 @@ function rttClass(rtt: number): string {
         <div v-if="swTab === 'create'" class="sw-section">
           <div class="card">
             <h3>创建共享世界</h3>
+            <!-- 创建方式切换 -->
+            <div class="sw-create-mode-tabs">
+              <button :class="['sw-mode-btn', { active: swCreateMode === 'instance' }]" @click="swCreateMode = 'instance'">
+                从实例创建
+              </button>
+              <button :class="['sw-mode-btn', { active: swCreateMode === 'manual' }]" @click="swCreateMode = 'manual'">
+                手动配置
+              </button>
+            </div>
             <div class="sw-form">
+              <!-- 模式 A：从实例创建 -->
+              <template v-if="swCreateMode === 'instance'">
+                <label>
+                  选择实例
+                  <select v-model="swCreateForm.profileId" class="input" :disabled="profiles.profiles.length === 0">
+                    <option value="">选择一个已有实例</option>
+                    <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
+                      {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
+                    </option>
+                  </select>
+                </label>
+                <p v-if="swSelectedCreateProfile" class="text-muted text-xs">
+                  {{ swSelectedCreateProfile.versionId }} · {{ formatProfileLoader(swSelectedCreateProfile) }} · {{ swSelectedCreateProfile.gameDir }}
+                </p>
+                <p v-else-if="profiles.profiles.length === 0" class="text-muted text-xs">
+                  还没有可用实例，请先到实例页面创建或导入实例。
+                </p>
+              </template>
+              <!-- 模式 B：手动配置 -->
+              <template v-else>
+                <label>
+                  MC 版本
+                  <select v-model="swCreateForm.mcVersion" class="input" :disabled="profiles.profiles.length === 0">
+                    <option value="">选择版本</option>
+                    <option v-for="version in swVersionOptions" :key="version" :value="version">{{ version }}</option>
+                  </select>
+                </label>
+                <label>
+                  Mod Loader
+                  <select v-model="swCreateForm.loaderType" class="input" :disabled="profiles.profiles.length === 0">
+                    <option v-for="loader in swLoaderOptions" :key="loader" :value="loader">
+                      {{ loader === 'vanilla' ? '原版' : loader }}
+                    </option>
+                  </select>
+                </label>
+                <label>
+                  使用实例
+                  <select v-model="swCreateForm.profileId" class="input" :disabled="swFilteredProfiles.length === 0">
+                    <option value="">选择匹配的实例</option>
+                    <option v-for="profile in swFilteredProfiles" :key="profile.id" :value="profile.id">
+                      {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
+                    </option>
+                  </select>
+                </label>
+                <p v-if="swSelectedCreateProfile" class="text-muted text-xs">
+                  实例目录：{{ swSelectedCreateProfile.gameDir }}
+                </p>
+                <p v-else-if="profiles.profiles.length > 0" class="text-muted text-xs">
+                  先选择一个与你的版本和 Loader 匹配的本地实例。
+                </p>
+                <p v-else class="text-muted text-xs">
+                  还没有可用实例，请先到实例页面创建或导入实例。
+                </p>
+              </template>
               <label>
                 世界名称
                 <input v-model="swCreateForm.worldName" placeholder="我的共享世界" class="input" />
               </label>
-              <label>
-                MC 版本
-                <input v-model="swCreateForm.mcVersion" placeholder="1.21.4" class="input" />
-              </label>
               <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
-              <button class="btn-primary" @click="handleCreateSharedWorld" :disabled="swCreating || !swCreateForm.worldName || !swCreateForm.mcVersion">
+              <button class="btn-primary" @click="handleCreateSharedWorld" :disabled="swCreating || !swCreateForm.worldName || !swSelectedCreateProfile">
                 {{ swCreating ? '创建中...' : '创建世界' }}
               </button>
             </div>
@@ -812,6 +981,18 @@ function rttClass(rtt: number): string {
           <div class="card">
             <h3>加入共享世界</h3>
             <div class="sw-form">
+              <label>
+                本地实例
+                <select v-model="swJoinProfileId" class="input" :disabled="profiles.profiles.length === 0">
+                  <option value="">使用默认游戏目录</option>
+                  <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
+                    {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
+                  </option>
+                </select>
+              </label>
+              <p v-if="swSelectedJoinProfile" class="text-muted text-xs">
+                当前实例：{{ swSelectedJoinProfile.gameDir }}
+              </p>
               <label>
                 房间码
                 <div class="input-row">
@@ -847,7 +1028,7 @@ function rttClass(rtt: number): string {
               </div>
             </div>
             <div class="sw-meta text-muted text-xs">
-              {{ sw.currentWorld?.mcVersion }}
+              {{ sw.currentWorld?.mcVersion }} · {{ formatWorldLoader(sw.currentWorld?.modLoader) }}
             </div>
           </div>
 
@@ -1363,6 +1544,18 @@ h4 { font-size: 14px; margin-bottom: 4px; }
 
 .sw-form { display: flex; flex-direction: column; gap: 10px; }
 .sw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
+
+.sw-create-mode-tabs {
+  display: flex; gap: 4px; margin-bottom: 12px;
+  background: var(--bg-secondary); border-radius: 6px; padding: 2px;
+}
+.sw-mode-btn {
+  flex: 1; padding: 6px 12px; border: none; background: none;
+  border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--text-muted); transition: all 0.15s;
+}
+.sw-mode-btn.active { background: var(--accent); color: #fff; }
+.sw-mode-btn:hover:not(.active) { color: var(--text-primary); }
 
 .sw-header-card { }
 .sw-status-badges { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -237,7 +237,7 @@ export class SignalingClient {
   // ========== 共享世界 (Persistent Room) ==========
 
   createPersistentRoom(playerName: string, worldMeta: {
-    worldName: string; mcVersion: string
+    worldName: string; mcVersion: string; modLoader?: { type: string; version: string }
   }): void {
     this.lastPlayerName = playerName
     this.send({ type: 'create-persistent-room', playerName, worldMeta })

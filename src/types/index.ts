@@ -390,14 +390,14 @@ export type SignalingMessage =
   | { type: 'turn-credentials'; iceServers: RTCIceServer[] }
   | { type: 'error'; message: string }
   // 共享世界 (persistent room)
-  | { type: 'create-persistent-room'; playerName: string; worldMeta: { worldName: string; mcVersion: string } }
+  | { type: 'create-persistent-room'; playerName: string; worldMeta: { worldName: string; mcVersion: string; modLoader?: { type: string; version: string } } }
   | { type: 'persistent-room-created'; roomId: string; roomCode: string }
   | { type: 'register-host'; mcPort: number }
   | { type: 'host-registered' }
   | { type: 'unregister-host' }
   | { type: 'host-unregistered' }
   | { type: 'query-host' }
-  | { type: 'host-info'; host: { peerId: string; peerName: string; mcPort?: number } | null; worldMeta?: { worldName: string; mcVersion: string } }
+  | { type: 'host-info'; host: { peerId: string; peerName: string; mcPort?: number } | null; worldMeta?: { worldName: string; mcVersion: string; modLoader?: { type: string; version: string } } }
   | { type: 'host-changed'; host: { peerId: string; peerName: string; mcPort?: number } | null }
   | { type: 'host-conflict' }
   | { type: 'save-offer'; targetPeerId: string; size: number; sha1: string }

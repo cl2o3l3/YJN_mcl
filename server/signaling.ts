@@ -41,6 +41,10 @@ interface Room {
   worldMeta?: {                   // 共享世界元数据
     worldName: string
     mcVersion: string
+    modLoader?: {
+      type: string
+      version: string
+    }
   }
   emptyAt?: number                // 房间变空的时间戳 (TTL 起算点)
 }
@@ -359,6 +363,12 @@ function handleMessage(peer: Peer, raw: string) {
         worldMeta: msg.worldMeta ? {
           worldName: String((msg.worldMeta as any).worldName || ''),
           mcVersion: String((msg.worldMeta as any).mcVersion || ''),
+          modLoader: (msg.worldMeta as any).modLoader?.type && (msg.worldMeta as any).modLoader?.version
+            ? {
+                type: String((msg.worldMeta as any).modLoader.type),
+                version: String((msg.worldMeta as any).modLoader.version),
+              }
+            : undefined,
         } : undefined,
       }
 

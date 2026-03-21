@@ -7,6 +7,7 @@
  *   迁移：房主退出 → 打包存档 → 传给候选人 → 候选人加载 → 开 LAN → 其他人重连
  */
 
+import type { ModLoaderInfo } from '../types'
 import { SignalingClient } from './signaling-client'
 import type { TransferProgress } from './save-transfer'
 
@@ -32,6 +33,7 @@ export interface HostInfo {
 export interface WorldMeta {
   worldName: string
   mcVersion: string
+  modLoader?: ModLoaderInfo
 }
 
 export interface ElectionEvents {
@@ -107,27 +109,37 @@ export class HostElection {
     // 监听信令事件
     this.setupListeners()
 
-    // 加入房间 (使用已有的 join-room，持久房间加入方式相同)
+    // 先挂监听，再发消息，避免快速响应导致竞态丢包
+    const roomJoinedPromise = this.waitForEvent('room-joined', 15000)
     this.signaling.joinRoom(roomCode, playerName)
-
-    // 等待 room-joined 事件
-    await this.waitForEvent('room-joined', 15000)
+    const roomJoined = await roomJoinedPromise as any
+    if (roomJoined.roomId) {
+      this.signaling.setRoomId(roomJoined.roomId)
+    }
 
     // 查询当前主机
     this.setState('querying-host')
+    const hostInfoPromise = this.waitForEvent('host-info', 10000)
     this.signaling.queryHost()
 
     // 等待 host-info 响应
-    const hostInfo = await this.waitForEvent('host-info', 10000) as any
+    const hostInfo = await hostInfoPromise as any
 
-    if (hostInfo.hostId) {
+    if (hostInfo.host) {
       // 有主机在线 → 作为客户端连接
-      this.events.onLog(`当前主机: ${hostInfo.hostName}，作为客户端加入`)
-      this.setHost({ peerId: hostInfo.hostId, peerName: hostInfo.hostName })
+      this.events.onLog(`当前主机: ${hostInfo.host.peerName}，作为客户端加入`)
+      this.setHost(hostInfo.host)
       this.myRole = 'client'
       this.setState('connected')
+
+      if (hostInfo.worldMeta) {
+        this.worldMeta = hostInfo.worldMeta
+      }
     } else {
       // 无主机 → 尝试成为主机
+      if (hostInfo.worldMeta) {
+        this.worldMeta = hostInfo.worldMeta
+      }
       this.events.onLog('当前无主机，正在竞选...')
       await this.becomeHost()
     }
@@ -142,10 +154,11 @@ export class HostElection {
 
     this.setupListeners()
 
+    const createPromise = this.waitForEvent('persistent-room-created', 15000)
     this.signaling.createPersistentRoom(playerName, worldMeta)
 
     // 等待 persistent-room-created
-    const result = await this.waitForEvent('persistent-room-created', 15000) as any
+    const result = await createPromise as any
     const roomCode = result.roomCode
     this.signaling.setRoomId(result.roomId)
 
@@ -168,12 +181,14 @@ export class HostElection {
       const { port } = await this.events.onNeedBecomeHost(this.worldMeta)
 
       // 注册为主机
+      const hostRegisteredPromise = this.waitForEvent('host-registered', 10000)
+      const hostConflictPromise = this.waitForEvent('host-conflict', 10000)
       this.signaling.registerHost(port)
 
       // 等待确认
       const result = await Promise.race([
-        this.waitForEvent('host-registered', 10000),
-        this.waitForEvent('host-conflict', 10000),
+        hostRegisteredPromise,
+        hostConflictPromise,
       ]) as any
 
       if (result.type === 'host-conflict') {
@@ -314,16 +329,26 @@ export class HostElection {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.signaling.off(eventName, handler)
+        this.signaling.off('error', errorHandler)
         reject(new Error(`等待 ${eventName} 超时 (${timeoutMs}ms)`))
       }, timeoutMs)
 
       const handler = (msg: any) => {
         clearTimeout(timeout)
         this.signaling.off(eventName, handler)
+        this.signaling.off('error', errorHandler)
         resolve({ ...msg, type: eventName })
       }
 
+      const errorHandler = (msg: any) => {
+        clearTimeout(timeout)
+        this.signaling.off(eventName, handler)
+        this.signaling.off('error', errorHandler)
+        reject(new Error(`信令错误: ${msg.message || '未知错误'}`))
+      }
+
       this.signaling.on(eventName, handler)
+      this.signaling.on('error', errorHandler)
     })
   }
 
