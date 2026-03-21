@@ -219,6 +219,7 @@ export interface LauncherSettings {
   gameDirs: string[]         // 多游戏目录
   theme: 'light' | 'dark' | 'system'
   accentColor?: string   // 自定义强调色 (hex)
+  bgColor?: string         // 自定义背景基调色 (hex), 自动派生全套 bg 变量
   backgroundImage?: string  // 自定义背景图片路径
   backgroundOpacity?: number // 背景不透明度 (0-1)
   maxConcurrentDownloads: number
@@ -538,6 +539,7 @@ export function getDefaultSettings(): LauncherSettings {
     gameDirs: [],
     theme: 'dark',
     accentColor: undefined,
+    bgColor: undefined,
     backgroundImage: undefined,
     backgroundOpacity: 0.3,
     maxConcurrentDownloads: 8,

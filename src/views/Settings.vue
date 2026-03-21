@@ -40,6 +40,45 @@ function resetAccent() {
   customColorInput.value = '#4ecca3'
 }
 
+// ========== 背景基调色预设 ==========
+const bgPresets = [
+  { color: '#1a1a2e', label: '深海蓝 (默认)' },
+  { color: '#1a1a1a', label: '纯黑' },
+  { color: '#2d1b2e', label: '暗萶紫' },
+  { color: '#1b2e1b', label: '暗森绿' },
+  { color: '#2e1b1b', label: '暗酒红' },
+  { color: '#1b262e', label: '灰青' },
+  { color: '#f0f2f7', label: '浅灰 (亮色)' },
+  { color: '#f5f0e8', label: '暖白' },
+  { color: '#e8f0e8', label: '淡绿' },
+  { color: '#f0e8f0', label: '淡紫' },
+]
+const customBgInput = ref(settings.bgColor || '#1a1a2e')
+
+function pickBgPreset(color: string) {
+  settings.setBgColor(color)
+  customBgInput.value = color
+}
+
+function onCustomBgChange(e: Event) {
+  const val = (e.target as HTMLInputElement).value
+  customBgInput.value = val
+  settings.setBgColor(val)
+}
+
+function resetBg() {
+  settings.setBgColor(undefined)
+  customBgInput.value = '#1a1a2e'
+}
+
+function isLightColor(hex: string): boolean {
+  const c = hex.replace('#', '')
+  const r = parseInt(c.substring(0, 2), 16)
+  const g = parseInt(c.substring(2, 4), 16)
+  const b = parseInt(c.substring(4, 6), 16)
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128
+}
+
 // P2P 自定义 TURN 临时输入
 const customTurnUrl = ref('')
 const customTurnUser = ref('')
@@ -208,6 +247,29 @@ function formatBytes(bytes: number): string {
           </label>
         </div>
         <button v-if="settings.accentColor" class="btn-reset-accent" @click="resetAccent">
+          重置默认
+        </button>
+      </div>
+
+      <!-- 背景基调色 -->
+      <div class="accent-section">
+        <label class="field-label">背景色</label>
+        <div class="accent-palette">
+          <button
+            v-for="p in bgPresets"
+            :key="p.color"
+            class="accent-swatch"
+            :class="{ active: settings.bgColor === p.color }"
+            :style="{ background: p.color, border: isLightColor(p.color) ? '2px solid var(--border)' : undefined }"
+            :title="p.label"
+            @click="pickBgPreset(p.color)"
+          />
+          <label class="accent-custom" title="自定义背景色">
+            <input type="color" :value="customBgInput" @input="onCustomBgChange" />
+            <span class="custom-icon">🎨</span>
+          </label>
+        </div>
+        <button v-if="settings.bgColor" class="btn-reset-accent" @click="resetBg">
           重置默认
         </button>
       </div>

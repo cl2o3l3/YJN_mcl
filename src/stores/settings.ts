@@ -9,6 +9,7 @@ export const useSettingsStore = defineStore('settings', () => {
     (localStorage.getItem('mc-theme') as 'light' | 'dark' | 'system') || 'dark'
   )
   const accentColor = ref<string | undefined>(undefined)
+  const bgColor = ref<string | undefined>(undefined)
   const backgroundImage = ref<string | undefined>(undefined)
   const backgroundOpacity = ref(0.3)
   const defaultGameDir = ref('')
@@ -36,6 +37,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const data: Partial<LauncherSettings> = {
       theme: theme.value,
       accentColor: accentColor.value,
+      bgColor: bgColor.value,
       backgroundImage: backgroundImage.value,
       backgroundOpacity: backgroundOpacity.value,
       defaultGameDir: defaultGameDir.value,
@@ -64,6 +66,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const saved = await window.api.settings.load()
     if (saved.theme) { theme.value = saved.theme; localStorage.setItem('mc-theme', saved.theme) }
     if (saved.accentColor !== undefined) accentColor.value = saved.accentColor
+    if (saved.bgColor !== undefined) bgColor.value = saved.bgColor
     if (saved.backgroundImage !== undefined) backgroundImage.value = saved.backgroundImage
     if (saved.backgroundOpacity !== undefined) backgroundOpacity.value = saved.backgroundOpacity
     if (saved.defaultGameDir) defaultGameDir.value = saved.defaultGameDir
@@ -161,12 +164,12 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   function applyTheme(t: 'light' | 'dark' | 'system') {
-    let resolved = t
-    if (t === 'system') {
-      resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-    }
+    let resolved: 'light' | 'dark' = t === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : t
     document.documentElement.setAttribute('data-theme', resolved)
     applyAccentColor(accentColor.value)
+    applyBgColor(bgColor.value)
   }
 
   function applyAccentColor(color?: string) {
@@ -192,6 +195,93 @@ export const useSettingsStore = defineStore('settings', () => {
   function setAccentColor(color?: string) {
     accentColor.value = color
     applyAccentColor(color)
+    persist()
+  }
+
+  // ========== 背景基调色派生 ==========
+
+  function hexToHsl(hex: string): [number, number, number] {
+    const c = hex.replace('#', '')
+    let r = parseInt(c.substring(0, 2), 16) / 255
+    let g = parseInt(c.substring(2, 4), 16) / 255
+    let b = parseInt(c.substring(4, 6), 16) / 255
+    const max = Math.max(r, g, b), min = Math.min(r, g, b)
+    let h = 0, s = 0
+    const l = (max + min) / 2
+    if (max !== min) {
+      const d = max - min
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6
+      else if (max === g) h = ((b - r) / d + 2) / 6
+      else h = ((r - g) / d + 4) / 6
+    }
+    return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)]
+  }
+
+  function hslToHex(h: number, s: number, l: number): string {
+    const s1 = s / 100, l1 = l / 100
+    const c = (1 - Math.abs(2 * l1 - 1)) * s1
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1))
+    const m = l1 - c / 2
+    let r = 0, g = 0, b = 0
+    if (h < 60) { r = c; g = x }
+    else if (h < 120) { r = x; g = c }
+    else if (h < 180) { g = c; b = x }
+    else if (h < 240) { g = x; b = c }
+    else if (h < 300) { r = x; b = c }
+    else { r = c; b = x }
+    const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0')
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+  }
+
+  function applyBgColor(color: string | undefined) {
+    const el = document.documentElement.style
+    if (!color) {
+      // 清除所有自定义 bg 变量，回退到 CSS 默认值
+      const vars = ['--bg-primary','--bg-secondary','--bg-card','--bg-hover','--bg-sidebar',
+        '--border','--text-primary','--text-secondary','--text-muted',
+        '--scrollbar-thumb','--scrollbar-thumb-hover','--shadow-color','--overlay-bg']
+      vars.forEach(v => el.removeProperty(v))
+      return
+    }
+    const [h, s, l] = hexToHsl(color)
+    const isDark = l < 50
+    if (isDark) {
+      // 暗色基调
+      el.setProperty('--bg-primary', hslToHex(h, s, l))
+      el.setProperty('--bg-secondary', hslToHex(h, Math.min(s + 5, 100), Math.max(l - 3, 0)))
+      el.setProperty('--bg-card', hslToHex(h, s, Math.min(l + 5, 100)))
+      el.setProperty('--bg-hover', hslToHex(h, s, Math.min(l + 10, 100)))
+      el.setProperty('--bg-sidebar', hslToHex(h, Math.min(s + 5, 100), Math.max(l - 7, 0)))
+      el.setProperty('--border', hslToHex(h, s, Math.min(l + 15, 100)))
+      el.setProperty('--text-primary', '#e4e4e4')
+      el.setProperty('--text-secondary', hslToHex(h, 15, 60))
+      el.setProperty('--text-muted', hslToHex(h, 12, 42))
+      el.setProperty('--scrollbar-thumb', hslToHex(h, s, Math.min(l + 15, 100)))
+      el.setProperty('--scrollbar-thumb-hover', hslToHex(h, 12, 42))
+      el.setProperty('--shadow-color', 'rgba(0,0,0,0.25)')
+      el.setProperty('--overlay-bg', 'rgba(0,0,0,0.55)')
+    } else {
+      // 亮色基调
+      el.setProperty('--bg-primary', hslToHex(h, s, l))
+      el.setProperty('--bg-secondary', hslToHex(h, Math.max(s - 5, 0), Math.max(l - 4, 0)))
+      el.setProperty('--bg-card', hslToHex(h, Math.max(s - 10, 0), Math.min(l + 6, 100)))
+      el.setProperty('--bg-hover', hslToHex(h, Math.max(s - 5, 0), Math.max(l - 6, 0)))
+      el.setProperty('--bg-sidebar', hslToHex(h, s, Math.max(l - 2, 0)))
+      el.setProperty('--border', hslToHex(h, Math.max(s - 5, 0), Math.max(l - 15, 0)))
+      el.setProperty('--text-primary', '#1a2035')
+      el.setProperty('--text-secondary', hslToHex(h, 15, 35))
+      el.setProperty('--text-muted', hslToHex(h, 12, 58))
+      el.setProperty('--scrollbar-thumb', hslToHex(h, Math.max(s - 5, 0), Math.max(l - 15, 0)))
+      el.setProperty('--scrollbar-thumb-hover', hslToHex(h, 12, 58))
+      el.setProperty('--shadow-color', 'rgba(0,0,0,0.08)')
+      el.setProperty('--overlay-bg', 'rgba(0,0,0,0.35)')
+    }
+  }
+
+  function setBgColor(color?: string) {
+    bgColor.value = color
+    applyBgColor(color)
     persist()
   }
 
@@ -223,7 +313,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    mirrorSource, theme, accentColor, backgroundImage, backgroundOpacity,
+    mirrorSource, theme, accentColor, bgColor, backgroundImage, backgroundOpacity,
     defaultGameDir, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
@@ -232,7 +322,7 @@ export const useSettingsStore = defineStore('settings', () => {
     addGameDir, removeGameDir,
     addJavaPath, removeJavaPath, setClientIdValue, persist,
     addCustomTurn, removeCustomTurn, addRelayServer, removeRelayServer,
-    setTheme, applyTheme, setAccentColor,
+    setTheme, applyTheme, setAccentColor, setBgColor,
     chooseBackground, clearBackground, setBackgroundOpacity
   }
 })
