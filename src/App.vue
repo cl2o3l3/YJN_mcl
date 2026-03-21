@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useSettingsStore } from './stores/settings'
 import { useProfilesStore } from './stores/profiles'
 import { useAuthStore } from './stores/auth'
@@ -9,13 +9,10 @@ import Sidebar from './components/Sidebar.vue'
 import TitleBar from './components/TitleBar.vue'
 import RightBar from './components/RightBar.vue'
 
-const route = useRoute()
 const router = useRouter()
 const settings = useSettingsStore()
 const profiles = useProfilesStore()
 const auth = useAuthStore()
-
-const isSetupPage = computed(() => route.path === '/setup')
 
 // 更新 toast
 const showUpdateToast = ref(false)
@@ -48,13 +45,6 @@ function dismissToast() {
 
 onMounted(async () => {
   await settings.init()
-
-  // 首次运行 → 跳转安装向导
-  if (!settings.setupCompleted) {
-    router.replace('/setup')
-    return
-  }
-
   await profiles.fetchProfiles()
   for (const dir of settings.gameDirs) {
     await profiles.scanDir(dir)
@@ -76,10 +66,7 @@ onMounted(async () => {
         </div>
       </div>
     </Transition>
-    <div v-if="isSetupPage" class="setup-body">
-      <router-view />
-    </div>
-    <div v-else class="app-body">
+    <div class="app-body">
       <Sidebar />
       <main class="app-content">
         <router-view v-slot="{ Component }">
@@ -111,14 +98,6 @@ onMounted(async () => {
   overflow-y: auto;
   padding: 24px;
 }
-.setup-body {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
 /* 更新 toast */
 .update-toast {
   position: fixed;

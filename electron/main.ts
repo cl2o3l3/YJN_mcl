@@ -4,7 +4,6 @@ import path from 'node:path'
 import { registerIpcHandlers } from './ipc/handlers'
 import { registerP2pHandlers } from './ipc/p2p-handlers'
 import { registerUpdaterHandlers } from './ipc/updater-handlers'
-import { registerInstallerHandlers } from './ipc/installer-handlers'
 import { registerOverlayHandlers } from './core/overlay-window'
 import { checkForUpdates } from './core/auto-updater'
 
@@ -49,7 +48,6 @@ function createWindow() {
 registerIpcHandlers()
 registerP2pHandlers()
 registerUpdaterHandlers()
-registerInstallerHandlers()
 registerOverlayHandlers()
 
 app.on('window-all-closed', () => {

@@ -139,10 +139,11 @@ function downloadPortableExe(version: string): Promise<string> {
       const options = {
         hostname: parsedUrl.hostname,
         path: parsedUrl.pathname + parsedUrl.search,
-        headers: { 'User-Agent': `YJN-Launcher/${app.getVersion()}` }
+        headers: { 'User-Agent': `YJN-Launcher/${app.getVersion()}` },
+        timeout: 30000 // 30 秒连接超时
       }
 
-      https.get(options, (res) => {
+      const req = https.get(options, (res) => {
         // GitHub 会 302 重定向到 CDN
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           download(res.headers.location, redirects + 1)
@@ -150,20 +151,32 @@ function downloadPortableExe(version: string): Promise<string> {
         }
 
         if (res.statusCode !== 200) {
-          reject(new Error(`下载失败: HTTP ${res.statusCode}`))
+          reject(new Error(`下载失败: HTTP ${res.statusCode}（Release 可能尚未发布）`))
           return
         }
 
         const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
         let transferred = 0
         let lastReport = 0
+        let lastDataTime = Date.now()
         const file = fs.createWriteStream(destPath)
+
+        // 数据传输停滞检测（60 秒无数据则超时）
+        const stallTimer = setInterval(() => {
+          if (Date.now() - lastDataTime > 60000) {
+            clearInterval(stallTimer)
+            req.destroy()
+            file.close()
+            fs.unlink(destPath, () => {})
+            reject(new Error('下载超时：60 秒内无数据传输'))
+          }
+        }, 10000)
 
         res.on('data', (chunk: Buffer) => {
           transferred += chunk.length
+          lastDataTime = Date.now()
           file.write(chunk)
 
-          // 限制进度上报频率（每 200ms 一次）
           const now = Date.now()
           if (now - lastReport > 200 || transferred === totalBytes) {
             lastReport = now
@@ -183,17 +196,26 @@ function downloadPortableExe(version: string): Promise<string> {
         const startTime = Date.now()
 
         res.on('end', () => {
+          clearInterval(stallTimer)
           file.end(() => {
             resolve(destPath)
           })
         })
 
         res.on('error', (err) => {
+          clearInterval(stallTimer)
           file.close()
           fs.unlink(destPath, () => {})
           reject(err)
         })
-      }).on('error', reject)
+      })
+
+      req.on('timeout', () => {
+        req.destroy()
+        reject(new Error('下载连接超时（30秒）'))
+      })
+
+      req.on('error', reject)
     }
 
     download(url)

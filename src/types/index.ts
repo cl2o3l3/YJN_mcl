@@ -226,8 +226,6 @@ export interface LauncherSettings {
   enableIPv6: boolean
   relayFallback: boolean
   curseForgeApiKey: string
-  // 首次安装
-  setupCompleted: boolean
 }
 
 // ========== 资源下载中心 (Mod/光影/资源包) ==========
@@ -528,6 +526,5 @@ export function getDefaultSettings(): LauncherSettings {
     enableIPv6: true,
     relayFallback: true,
     curseForgeApiKey: '$2a$10$QBYU9O0bXbaY.Z0coFAQlOaC8ABNKWywRnQ.MKC2EvB/Ca/umVlnK',
-    setupCompleted: false,
   }
 }

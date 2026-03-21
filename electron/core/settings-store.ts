@@ -27,7 +27,6 @@ export function loadSettings(): LauncherSettings {
     enableIPv6: store.get('enableIPv6'),
     relayFallback: store.get('relayFallback'),
     curseForgeApiKey: store.get('curseForgeApiKey'),
-    setupCompleted: store.get('setupCompleted'),
   }
 }
 

@@ -27,7 +27,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const relayServers = ref<string[]>([])
   const enableIPv6 = ref(true)
   const relayFallback = ref(true)
-  const setupCompleted = ref(false)
 
   /** 将需要持久化的字段写入 electron-store */
   function persist(extra?: Partial<LauncherSettings>) {
@@ -73,15 +72,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (saved.enableIPv6 !== undefined) enableIPv6.value = saved.enableIPv6
     if (saved.relayFallback !== undefined) relayFallback.value = saved.relayFallback
     if (saved.curseForgeApiKey) curseForgeApiKey.value = saved.curseForgeApiKey
-    if (saved.setupCompleted !== undefined) setupCompleted.value = saved.setupCompleted
-
-    // 兼容升级：如果已有 defaultGameDir 说明之前已经在用，自动标记安装完成
-    if (!setupCompleted.value && saved.defaultGameDir) {
-      setupCompleted.value = true
-      window.api.settings.save({ setupCompleted: true })
-    }
-
-    // 再从系统获取运行时信息
+    // 从系统获取运行时信息
     mirrorSource.value = await window.api.mirror.get()
     if (!defaultGameDir.value) defaultGameDir.value = await window.api.system.defaultGameDir()
     totalMemory.value = await window.api.system.totalMemory()
@@ -180,23 +171,15 @@ export const useSettingsStore = defineStore('settings', () => {
     persist()
   }
 
-  function completeSetup(gameDir: string) {
-    setupCompleted.value = true
-    defaultGameDir.value = gameDir
-    if (!gameDirs.value.includes(gameDir)) gameDirs.value.push(gameDir)
-    persist({ setupCompleted: true })
-  }
-
   return {
     mirrorSource, theme, defaultGameDir, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,
-    setupCompleted,
     init, setMirrorSource, browseDefaultJava, browseDefaultGameDir,
     addGameDir, removeGameDir,
     addJavaPath, removeJavaPath, setClientIdValue, persist,
     addCustomTurn, removeCustomTurn, addRelayServer, removeRelayServer,
-    setTheme, applyTheme, completeSetup
+    setTheme, applyTheme
   }
 })

@@ -295,13 +295,6 @@ const api = {
     hide: () => ipcRenderer.invoke('overlay:hide') as Promise<void>,
     updatePeers: (peers: any[]) => ipcRenderer.invoke('overlay:update', peers) as Promise<void>,
   },
-
-  // ========== 安装器 ==========
-  installer: {
-    getDefaults: () => ipcRenderer.invoke('installer:getDefaults') as Promise<{ installDir: string; gameDir: string }>,
-    selectDir: (defaultPath: string) => ipcRenderer.invoke('installer:selectDir', defaultPath) as Promise<string | null>,
-    install: (options: any) => ipcRenderer.invoke('installer:install', options) as Promise<{ success: boolean; error?: string; installedExePath?: string }>,
-  },
 }
 
 contextBridge.exposeInMainWorld('api', api)
