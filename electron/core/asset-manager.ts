@@ -39,7 +39,8 @@ export async function collectAssetTasks(
       url: mirrorAssetUrl(asset.hash),
       path: destPath,
       sha1: asset.hash,
-      size: asset.size
+      size: asset.size,
+      fallbackUrls: [`https://resources.download.minecraft.net/${prefix}/${asset.hash}`]
     })
   }
 

@@ -184,6 +184,7 @@ export interface DownloadTask {
   path: string
   sha1?: string
   size?: number
+  fallbackUrls?: string[]
 }
 
 export interface DownloadProgress {

@@ -31,12 +31,17 @@ export async function downloadFile(
   destPath: string,
   sha1?: string
 ): Promise<number> {
-  // 如果文件已存在且 SHA1 匹配, 跳过
-  if (sha1 && fs.existsSync(destPath)) {
-    const existing = await fileSHA1(destPath)
-    if (existing === sha1) {
-      const stat = fs.statSync(destPath)
-      return stat.size
+  // 如果文件已存在, 根据 SHA1 决定是否跳过
+  if (fs.existsSync(destPath)) {
+    const stat = fs.statSync(destPath)
+    if (stat.size > 0) {
+      if (sha1) {
+        const existing = await fileSHA1(destPath)
+        if (existing === sha1) return stat.size
+      } else {
+        // 无 SHA1 校验且文件已存在 (原子写入保证完整性), 直接跳过
+        return stat.size
+      }
     }
   }
 
@@ -119,24 +124,29 @@ export async function postJson<T = unknown>(url: string, body: unknown, headers?
   return response.json() as Promise<T>
 }
 
-/** 带重试的单文件下载 */
+/** 带重试的单文件下载 (支持 fallback URL) */
 async function downloadWithRetry(
   task: DownloadTask,
   maxRetries = 3
 ): Promise<number> {
+  const urls = [task.url, ...(task.fallbackUrls || [])]
   let lastErr: Error | undefined
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await downloadFile(task.url, task.path, task.sha1)
-    } catch (e) {
-      lastErr = e as Error
-      // 指数退避: 500ms, 1s, 2s
-      if (attempt < maxRetries - 1) {
-        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)))
+
+  for (const url of urls) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await downloadFile(url, task.path, task.sha1)
+      } catch (e) {
+        lastErr = e as Error
+        // HTTP 4xx 错误为永久性失败, 跳过重试直接尝试下一个 URL
+        if (/Download failed: 4\d\d/.test(lastErr.message)) break
+        if (attempt < maxRetries - 1) {
+          await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)))
+        }
       }
     }
   }
-  throw lastErr
+  throw lastErr!
 }
 
 /** 批量并发下载 */
