@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useSettingsStore } from './stores/settings'
 import { useProfilesStore } from './stores/profiles'
 import { useAuthStore } from './stores/auth'
@@ -7,9 +8,13 @@ import Sidebar from './components/Sidebar.vue'
 import TitleBar from './components/TitleBar.vue'
 import RightBar from './components/RightBar.vue'
 
+const route = useRoute()
+const router = useRouter()
 const settings = useSettingsStore()
 const profiles = useProfilesStore()
 const auth = useAuthStore()
+
+const isSetupPage = computed(() => route.path === '/setup')
 
 // 立刻应用保存的主题（避免闪白）
 settings.applyTheme(settings.theme)
@@ -19,8 +24,14 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
 })
 onMounted(async () => {
   await settings.init()
+
+  // 首次运行 → 跳转安装向导
+  if (!settings.setupCompleted) {
+    router.replace('/setup')
+    return
+  }
+
   await profiles.fetchProfiles()
-  // 自动扫描所有游戏目录中的已有实例
   for (const dir of settings.gameDirs) {
     await profiles.scanDir(dir)
   }
@@ -31,7 +42,10 @@ onMounted(async () => {
 <template>
   <div class="app-layout">
     <TitleBar />
-    <div class="app-body">
+    <div v-if="isSetupPage" class="setup-body">
+      <router-view />
+    </div>
+    <div v-else class="app-body">
       <Sidebar />
       <main class="app-content">
         <router-view v-slot="{ Component }">
@@ -62,5 +76,12 @@ onMounted(async () => {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+}
+.setup-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 </style>

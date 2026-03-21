@@ -138,14 +138,14 @@ export async function fetchForgeVersions(mcVersion: string): Promise<ForgeVersio
   return result
 }
 
-/** 获取 Forge installer JAR 下载地址 */
-function getForgeInstallerUrl(mcVersion: string, forgeVersion: string): string {
-  const source = getMirrorSource()
+/** 获取 Forge installer JAR 下载地址列表（按优先级排序，用于 fallback） */
+function getForgeInstallerUrls(mcVersion: string, forgeVersion: string): string[] {
   const fileName = `forge-${mcVersion}-${forgeVersion}-installer.jar`
-  if (source === 'bmclapi') {
-    return `https://bmclapi2.bangbang93.com/forge/download/${forgeVersion}`
-  }
-  return `https://maven.minecraftforge.net/net/minecraftforge/forge/${mcVersion}-${forgeVersion}/${fileName}`
+  const official = `https://maven.minecraftforge.net/net/minecraftforge/forge/${mcVersion}-${forgeVersion}/${fileName}`
+  const bmclapi = `https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/${mcVersion}-${forgeVersion}/${fileName}`
+  const source = getMirrorSource()
+  // 用户选了 BMCLAPI 就先试 BMCLAPI，否则先官方
+  return source === 'bmclapi' ? [bmclapi, official] : [official, bmclapi]
 }
 
 /** 安装 Forge — 下载 installer.jar 并执行 */
@@ -161,18 +161,28 @@ export async function installForgeLoader(
   // 2. 确定 Java 路径
   const java = javaPath || await resolveJavaPath(8)
 
-  // 3. 下载 installer
-  const installerUrl = getForgeInstallerUrl(mcVersion, forgeVersion)
+  // 3. 下载 installer（带 fallback）
+  const installerUrls = getForgeInstallerUrls(mcVersion, forgeVersion)
   const tmpDir = path.join(gameDir, '.mc-launcher-tmp')
   await fsp.mkdir(tmpDir, { recursive: true })
   const installerPath = path.join(tmpDir, `forge-${mcVersion}-${forgeVersion}-installer.jar`)
 
   if (!fs.existsSync(installerPath)) {
     const { net } = await import('electron')
-    const resp = await net.fetch(installerUrl)
-    if (!resp.ok) throw new Error(`下载 Forge 安装器失败: ${resp.status} ${installerUrl}`)
-    const buffer = Buffer.from(await resp.arrayBuffer())
-    await fsp.writeFile(installerPath, buffer)
+    let lastError: Error | undefined
+    for (const url of installerUrls) {
+      try {
+        const resp = await net.fetch(url)
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        const buffer = Buffer.from(await resp.arrayBuffer())
+        await fsp.writeFile(installerPath, buffer)
+        lastError = undefined
+        break
+      } catch (e: any) {
+        lastError = new Error(`下载 Forge 安装器失败: ${e.message} ${url}`)
+      }
+    }
+    if (lastError) throw lastError
   }
 
   // 4. 执行 installer
@@ -214,13 +224,13 @@ export async function fetchNeoForgeVersions(mcVersion: string): Promise<ModLoade
   }
 }
 
-/** 获取 NeoForge installer 下载地址 */
-function getNeoForgeInstallerUrl(neoforgeVersion: string): string {
+/** 获取 NeoForge installer 下载地址列表 */
+function getNeoForgeInstallerUrls(neoforgeVersion: string): string[] {
+  const fileName = `neoforge-${neoforgeVersion}-installer.jar`
+  const official = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${neoforgeVersion}/${fileName}`
+  const bmclapi = `https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/${neoforgeVersion}/${fileName}`
   const source = getMirrorSource()
-  if (source === 'bmclapi') {
-    return `https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/${neoforgeVersion}/neoforge-${neoforgeVersion}-installer.jar`
-  }
-  return `https://maven.neoforged.net/releases/net/neoforged/neoforge/${neoforgeVersion}/neoforge-${neoforgeVersion}-installer.jar`
+  return source === 'bmclapi' ? [bmclapi, official] : [official, bmclapi]
 }
 
 /** 安装 NeoForge */
@@ -234,17 +244,27 @@ export async function installNeoForgeLoader(
 
   const java = javaPath || await resolveJavaPath(17)
 
-  const installerUrl = getNeoForgeInstallerUrl(neoforgeVersion)
+  const installerUrls = getNeoForgeInstallerUrls(neoforgeVersion)
   const tmpDir = path.join(gameDir, '.mc-launcher-tmp')
   await fsp.mkdir(tmpDir, { recursive: true })
   const installerPath = path.join(tmpDir, `neoforge-${neoforgeVersion}-installer.jar`)
 
   if (!fs.existsSync(installerPath)) {
     const { net } = await import('electron')
-    const resp = await net.fetch(installerUrl)
-    if (!resp.ok) throw new Error(`下载 NeoForge 安装器失败: ${resp.status} ${installerUrl}`)
-    const buffer = Buffer.from(await resp.arrayBuffer())
-    await fsp.writeFile(installerPath, buffer)
+    let lastError: Error | undefined
+    for (const url of installerUrls) {
+      try {
+        const resp = await net.fetch(url)
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        const buffer = Buffer.from(await resp.arrayBuffer())
+        await fsp.writeFile(installerPath, buffer)
+        lastError = undefined
+        break
+      } catch (e: any) {
+        lastError = new Error(`下载 NeoForge 安装器失败: ${e.message} ${url}`)
+      }
+    }
+    if (lastError) throw lastError
   }
 
   await runJarInstaller(java, installerPath, gameDir)
@@ -305,6 +325,12 @@ async function runJarInstaller(javaPath: string, installerJar: string, gameDir: 
 }
 
 function runJarInstallerOnce(javaPath: string, installerJar: string, gameDir: string): Promise<void> {
+  // Forge/NeoForge installer 要求 launcher_profiles.json 存在
+  const profilesPath = path.join(gameDir, 'launcher_profiles.json')
+  if (!fs.existsSync(profilesPath)) {
+    fs.writeFileSync(profilesPath, JSON.stringify({ profiles: {}, selectedProfile: '' }, null, 2))
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(javaPath, [
       '-jar', installerJar,

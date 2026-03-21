@@ -34,11 +34,46 @@ export class SignalingClient {
     this.listeners.get(event)?.forEach(cb => cb(...args))
   }
 
+  /** 将 WS/HTTP URL 转为 HTTP(S) URL */
+  private toHttpUrl(url: string): string {
+    return url
+      .replace(/^wss:\/\//, 'https://')
+      .replace(/^ws:\/\//, 'http://')
+      .replace(/\/$/, '')
+  }
+
+  /** 将 URL 转为 WSS URL（localhost 除外） */
+  private toWsUrl(url: string): string {
+    let wsUrl = url
+    if (!wsUrl.startsWith('ws://localhost') && !wsUrl.startsWith('wss://')) {
+      wsUrl = wsUrl.replace(/^(http:\/\/|ws:\/\/)/, 'wss://')
+      if (!wsUrl.startsWith('wss://')) wsUrl = 'wss://' + wsUrl
+    }
+    if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+      wsUrl = 'wss://' + wsUrl
+    }
+    return wsUrl
+  }
+
+  /** 唤醒服务器（Render 免费实例休眠后 cold start 需要时间） */
+  private async wakeUpServer(url: string): Promise<void> {
+    const httpUrl = this.toHttpUrl(url)
+    this.emit('waking-up')
+    try {
+      await fetch(`${httpUrl}/health`, { signal: AbortSignal.timeout(60000) })
+    } catch {
+      // 即使 health 失败也继续尝试 WebSocket 连接
+    }
+  }
+
   /** 连接到信令服务器 */
-  connect(url: string): Promise<void> {
+  async connect(url: string): Promise<void> {
     this.url = url
     this.intentionalClose = false
     this.reconnectAttempts = 0
+
+    // 先用 HTTP 唤醒服务器（处理 Render 免费实例休眠）
+    await this.wakeUpServer(url)
 
     return new Promise((resolve, reject) => {
       this.doConnect(resolve, reject)
@@ -50,26 +85,26 @@ export class SignalingClient {
     reject?: (reason: Error) => void
   ): void {
     try {
-      // 强制 WSS (除了 localhost 开发环境)
-      let wsUrl = this.url
-      if (!wsUrl.startsWith('ws://localhost') && !wsUrl.startsWith('wss://')) {
-        wsUrl = wsUrl.replace(/^(http:\/\/|ws:\/\/)/, 'wss://')
-        if (!wsUrl.startsWith('wss://')) wsUrl = 'wss://' + wsUrl
-      }
-      if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
-        wsUrl = 'wss://' + wsUrl
-      }
-
+      const wsUrl = this.toWsUrl(this.url)
       this.ws = new WebSocket(wsUrl)
     } catch (err) {
       reject?.(new Error(`WebSocket creation failed: ${err}`))
       return
     }
 
+    // 15 秒连接超时
+    const connectTimeout = setTimeout(() => {
+      if (!this._connected) {
+        this.ws?.close()
+        reject?.(new Error('WebSocket 连接超时，请稍后重试'))
+      }
+    }, 15000)
+
     const firstMessage = (event: MessageEvent) => {
       try {
         const msg = JSON.parse(event.data)
         if (msg.type === 'welcome' && msg.peerId) {
+          clearTimeout(connectTimeout)
           this._peerId = msg.peerId
           this._connected = true
           this.reconnectAttempts = 0
@@ -99,6 +134,7 @@ export class SignalingClient {
     })
 
     this.ws.addEventListener('error', () => {
+      clearTimeout(connectTimeout)
       if (!this._connected) {
         reject?.(new Error('WebSocket connection failed'))
       }

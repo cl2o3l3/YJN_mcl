@@ -90,6 +90,10 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
     signaling = new SignalingClient()
 
+    signaling.on('waking-up', () => {
+      addLog('正在唤醒信令服务器（首次连接可能需要等待）...')
+    })
+
     signaling.on('disconnected', () => {
       addLog('与信令服务器断开连接')
     })

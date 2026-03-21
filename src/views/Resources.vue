@@ -5,6 +5,7 @@ import { useProfilesStore } from '../stores/profiles'
 import { useVersionsStore } from '../stores/versions'
 import { useTasksStore } from '../stores/tasks'
 import { useNotificationsStore } from '../stores/notifications'
+import { useSettingsStore } from '../stores/settings'
 import ResourceCard from '../components/ResourceCard.vue'
 import InstalledResources from '../components/InstalledResources.vue'
 import type { ResourceProject, ResourceType, ResourceVersion, ResourceFile, GameProfile } from '../types'
@@ -14,6 +15,9 @@ const profiles = useProfilesStore()
 const versionsStore = useVersionsStore()
 const tasksStore = useTasksStore()
 const notifsStore = useNotificationsStore()
+const settingsStore = useSettingsStore()
+
+const cfConfigured = computed(() => !!settingsStore.curseForgeApiKey)
 
 const tabs = ['browse', 'installed'] as const
 const activeTab = ref<'browse' | 'installed'>('browse')
@@ -573,8 +577,14 @@ function totalPages(): number {
         </button>
       </div>
 
+      <!-- CurseForge 未配置提示 -->
+      <div v-if="rs.searchPlatform === 'curseforge' && !cfConfigured" class="cf-notice">
+        <p>⚠️ 使用 CurseForge 需要 API Key</p>
+        <p class="cf-notice-hint">请在 <strong>设置</strong> 页面填入 CurseForge API Key（可在 <a href="https://console.curseforge.com" target="_blank" style="color:var(--accent)">console.curseforge.com</a> 免费申请）</p>
+      </div>
+
       <!-- 加载中 -->
-      <div v-if="rs.searchLoading" class="loading-text">搜索中...</div>
+      <div v-else-if="rs.searchLoading" class="loading-text">搜索中...</div>
 
       <!-- 结果列表 -->
       <div v-else-if="rs.searchResult" class="results">
@@ -895,6 +905,14 @@ function totalPages(): number {
   padding: 32px;
   font-size: 14px;
 }
+
+.cf-notice {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+.cf-notice p { margin: 4px 0; }
+.cf-notice-hint { font-size: 13px; color: var(--text-muted); }
 
 .results {
   display: flex;

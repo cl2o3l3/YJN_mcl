@@ -1,4 +1,4 @@
-import { net } from 'electron'
+import https from 'node:https'
 import type {
   ResourceSearchParams, ResourceProject, ResourceVersion,
   ResourceSearchResult, ResourceType, ResourceFile,
@@ -40,31 +40,52 @@ function setCache(key: string, data: unknown) {
 
 // ========== API Key ==========
 
-let apiKey = ''
+const DEFAULT_CF_KEY = '$2a$10$QBYU9O0bXbaY.Z0coFAQlOaC8ABNKWywRnQ.MKC2EvB/Ca/umVlnK'
+
+let apiKey = DEFAULT_CF_KEY
 
 export function setCurseForgeApiKey(key: string) {
-  apiKey = key
+  // 只有非空值才覆盖，防止旧 settings 中的空值覆盖内置 key
+  if (key) apiKey = key
 }
 
 export function getCurseForgeApiKey(): string {
   return apiKey
 }
 
+export function isCurseForgeConfigured(): boolean {
+  return apiKey.length > 0
+}
+
 // ========== HTTP 工具 ==========
 
 async function cfFetch<T>(endpoint: string): Promise<T> {
-  if (!apiKey) throw new Error('CurseForge API key not configured')
+  const key = apiKey || DEFAULT_CF_KEY
+  if (!key) throw new Error('CurseForge API key not configured')
   const url = endpoint.startsWith('http') ? endpoint : `${BASE}${endpoint}`
-  const resp = await net.fetch(url, {
-    headers: {
-      'x-api-key': apiKey,
-      'Accept': 'application/json',
-    }
+
+  // 使用 Node https 模块确保 header 正确传递
+  const body = await new Promise<string>((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        'x-api-key': key,
+        'Accept': 'application/json',
+      }
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        let errBody = ''
+        res.on('data', (d: Buffer) => errBody += d.toString())
+        res.on('end', () => reject(new Error(`CurseForge API error: ${res.statusCode} ${errBody}`)))
+        return
+      }
+      let data = ''
+      res.on('data', (d: Buffer) => data += d.toString())
+      res.on('end', () => resolve(data))
+    })
+    req.on('error', reject)
   })
-  if (!resp.ok) {
-    throw new Error(`CurseForge API error: ${resp.status} ${await resp.text()}`)
-  }
-  return resp.json() as Promise<T>
+
+  return JSON.parse(body) as T
 }
 
 // ========== CurseForge → 统一类型映射 ==========

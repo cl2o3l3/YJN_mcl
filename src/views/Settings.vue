@@ -117,6 +117,7 @@ const updateStatus = ref<{
   releaseNotes?: string
   progress?: { percent: number; bytesPerSecond: number; transferred: number; total: number }
   error?: string
+  isPortable?: boolean
 }>({ status: 'idle' })
 
 let unsubUpdater: (() => void) | null = null
@@ -141,6 +142,10 @@ function downloadUpdate() {
 
 function installUpdateNow() {
   window.api.updater.install()
+}
+
+function openRelease() {
+  window.api.updater.openRelease()
 }
 
 function formatBytes(bytes: number): string {
@@ -329,6 +334,20 @@ function formatBytes(bytes: number): string {
       </div>
     </div>
 
+    <!-- CurseForge API Key -->
+    <div class="card setting-group">
+      <h3>CurseForge API Key</h3>
+      <p class="hint">在资源中心使用 CurseForge 平台搜索资源需要 API Key。请前往 <a href="https://console.curseforge.com" target="_blank" style="color:var(--accent)">console.curseforge.com</a> 免费申请。</p>
+      <div class="input-row">
+        <input
+          v-model="settings.curseForgeApiKey"
+          placeholder="$2a$10$..."
+          type="password"
+          @change="settings.persist()"
+        />
+      </div>
+    </div>
+
     <!-- P2P 联机设置 -->
     <div class="card setting-group">
       <h3>P2P 联机</h3>
@@ -413,7 +432,10 @@ function formatBytes(bytes: number): string {
       <div v-else-if="updateStatus.status === 'available'" class="update-info">
         <p><strong>发现新版本 {{ updateStatus.version }}</strong></p>
         <p v-if="updateStatus.releaseNotes" class="hint release-notes">{{ updateStatus.releaseNotes }}</p>
-        <button class="btn-primary" @click="downloadUpdate">下载更新</button>
+        <div class="update-btn-row">
+          <button class="btn-primary" @click="downloadUpdate">下载更新</button>
+          <button v-if="updateStatus.isPortable" class="btn-secondary" @click="openRelease">前往 Release 页面</button>
+        </div>
       </div>
 
       <div v-else-if="updateStatus.status === 'downloading'" class="update-info">
@@ -431,8 +453,17 @@ function formatBytes(bytes: number): string {
 
       <div v-else-if="updateStatus.status === 'downloaded'" class="update-info">
         <p><strong>✅ 下载完成</strong></p>
-        <p class="hint">点击「立即安装」将退出并安装更新。</p>
-        <button class="btn-primary" @click="installUpdateNow">立即安装</button>
+        <template v-if="updateStatus.isPortable">
+          <p class="hint">点击「立即更新」将自动替换当前程序并重启。</p>
+          <div class="update-btn-row">
+            <button class="btn-primary" @click="installUpdateNow">立即更新</button>
+            <button class="btn-secondary" @click="openRelease">前往 Release 页面</button>
+          </div>
+        </template>
+        <template v-else>
+          <p class="hint">点击「立即安装」将退出并安装更新。</p>
+          <button class="btn-primary" @click="installUpdateNow">立即安装</button>
+        </template>
       </div>
 
       <div v-else-if="updateStatus.status === 'error'" class="update-info">
@@ -628,6 +659,7 @@ h2 { margin-bottom: 16px; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .update-info { display: flex; flex-direction: column; gap: 8px; }
+.update-btn-row { display: flex; gap: 8px; align-items: center; }
 .update-progress { margin-top: 4px; }
 .release-notes {
   max-height: 80px; overflow-y: auto; white-space: pre-wrap;

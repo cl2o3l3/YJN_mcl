@@ -24,6 +24,7 @@ import {
   searchResources, getResourceDetail, getResourceVersions,
   installResource, getInstalledResources, removeResource, resolveDependencies
 } from '../core/resource-manager'
+import { setCurseForgeApiKey, isCurseForgeConfigured } from '../core/curseforge-api'
 import { installModpack } from '../core/modpack-installer'
 import type {
   DownloadProgress, MinecraftAccount, AuthProgressEvent, YggdrasilServerInfo,
@@ -49,7 +50,22 @@ function safe<T>(fn: (...args: any[]) => T): (...args: any[]) => Promise<Awaited
 export function registerIpcHandlers() {
   // ========== 设置持久化 ==========
   ipcMain.handle('settings:load', safe(() => loadSettings()))
-  ipcMain.handle('settings:save', safe((_, partial: Partial<LauncherSettings>) => saveSettings(partial)))
+  ipcMain.handle('settings:save', safe((_, partial: Partial<LauncherSettings>) => {
+    saveSettings(partial)
+    // 如果保存了 CurseForge API Key，立即同步到运行时
+    if (partial.curseForgeApiKey !== undefined) {
+      setCurseForgeApiKey(partial.curseForgeApiKey)
+    }
+  }))
+
+  // 启动时从持久化设置加载 CurseForge API Key
+  const savedSettings = loadSettings()
+  if (savedSettings.curseForgeApiKey) {
+    setCurseForgeApiKey(savedSettings.curseForgeApiKey)
+  }
+
+  // CurseForge 配置状态
+  ipcMain.handle('curseforge:isConfigured', safe(() => isCurseForgeConfigured()))
 
   // ========== 版本 ==========
   ipcMain.handle('versions:getManifest', safe((_, forceRefresh?: boolean) =>

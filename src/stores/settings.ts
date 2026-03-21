@@ -18,6 +18,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultMaxMemory = ref(4096)
   const totalMemory = ref(8192)
   const clientId = ref('')
+  const curseForgeApiKey = ref('$2a$10$QBYU9O0bXbaY.Z0coFAQlOaC8ABNKWywRnQ.MKC2EvB/Ca/umVlnK')
 
   // P2P
   const signalingServer = ref('wss://mc-signaling.onrender.com')
@@ -26,6 +27,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const relayServers = ref<string[]>([])
   const enableIPv6 = ref(true)
   const relayFallback = ref(true)
+  const setupCompleted = ref(false)
 
   /** 将需要持久化的字段写入 electron-store */
   function persist(extra?: Partial<LauncherSettings>) {
@@ -45,9 +47,11 @@ export const useSettingsStore = defineStore('settings', () => {
       relayServers: relayServers.value,
       enableIPv6: enableIPv6.value,
       relayFallback: relayFallback.value,
+      curseForgeApiKey: curseForgeApiKey.value,
       ...extra
     }
-    window.api.settings.save(data)
+    // 用 JSON 序列化去除 Vue reactive Proxy，否则 Electron IPC structured clone 会失败
+    window.api.settings.save(JSON.parse(JSON.stringify(data)))
   }
 
   async function init() {
@@ -68,6 +72,14 @@ export const useSettingsStore = defineStore('settings', () => {
     if (saved.relayServers?.length) relayServers.value = saved.relayServers
     if (saved.enableIPv6 !== undefined) enableIPv6.value = saved.enableIPv6
     if (saved.relayFallback !== undefined) relayFallback.value = saved.relayFallback
+    if (saved.curseForgeApiKey) curseForgeApiKey.value = saved.curseForgeApiKey
+    if (saved.setupCompleted !== undefined) setupCompleted.value = saved.setupCompleted
+
+    // 兼容升级：如果已有 defaultGameDir 说明之前已经在用，自动标记安装完成
+    if (!setupCompleted.value && saved.defaultGameDir) {
+      setupCompleted.value = true
+      window.api.settings.save({ setupCompleted: true })
+    }
 
     // 再从系统获取运行时信息
     mirrorSource.value = await window.api.mirror.get()
@@ -168,15 +180,23 @@ export const useSettingsStore = defineStore('settings', () => {
     persist()
   }
 
+  function completeSetup(gameDir: string) {
+    setupCompleted.value = true
+    defaultGameDir.value = gameDir
+    if (!gameDirs.value.includes(gameDir)) gameDirs.value.push(gameDir)
+    persist({ setupCompleted: true })
+  }
+
   return {
     mirrorSource, theme, defaultGameDir, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
-    defaultMinMemory, defaultMaxMemory, totalMemory, clientId,
+    defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,
+    setupCompleted,
     init, setMirrorSource, browseDefaultJava, browseDefaultGameDir,
     addGameDir, removeGameDir,
     addJavaPath, removeJavaPath, setClientIdValue, persist,
     addCustomTurn, removeCustomTurn, addRelayServer, removeRelayServer,
-    setTheme, applyTheme
+    setTheme, applyTheme, completeSetup
   }
 })

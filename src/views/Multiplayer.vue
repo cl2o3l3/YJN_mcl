@@ -358,7 +358,8 @@ function rttClass(rtt: number): string {
       <template v-if="mp.state === 'connecting' && mp.manualPhase === 'idle'">
         <div class="card center-card">
           <div class="spinner" />
-          <p>正在连接...</p>
+          <p>正在连接信令服务器...</p>
+          <p class="text-muted text-sm">首次连接或服务器休眠时可能需要等待较长时间</p>
           <p v-if="mp.error" class="error-text">{{ mp.error }}</p>
           <button class="btn-text mt-sm" @click="goHome">取消</button>
         </div>

@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
+    { path: '/setup', name: 'setup', component: () => import('../views/Setup.vue') },
     { path: '/', name: 'home', component: () => import('../views/Home.vue') },
     { path: '/profiles', name: 'profiles', component: () => import('../views/Profiles.vue') },
     { path: '/versions', name: 'versions', component: () => import('../views/Versions.vue') },
