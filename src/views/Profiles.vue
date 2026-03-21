@@ -66,6 +66,24 @@ async function openGameDir(dir: string) {
   await window.api.system.openFolder(dir)
 }
 
+async function handleToggleResource(r: InstalledResource, gameDir: string) {
+  try {
+    await window.api.resources.toggle(r.type, gameDir, r.filename, !r.enabled)
+    r.enabled = !r.enabled
+  } catch (e: any) {
+    notifsStore.push('error', `切换资源状态失败: ${e.message}`)
+  }
+}
+
+async function handleRemoveResource(r: InstalledResource, gameDir: string) {
+  try {
+    await window.api.resources.remove(r.type, gameDir, r.filename)
+    resData[r.type] = resData[r.type].filter(item => item.filename !== r.filename)
+  } catch (e: any) {
+    notifsStore.push('error', `删除资源失败: ${e.message}`)
+  }
+}
+
 function openCreate() {
   router.push({ name: 'versions' })
 }
@@ -252,9 +270,24 @@ async function onDropImport(event: DragEvent) {
             </div>
             <div class="res-list">
               <div v-if="resData[resTab].length === 0" class="res-empty">无已安装资源</div>
-              <div v-for="r in resData[resTab]" :key="r.filename" class="res-item">
-                <span class="res-title">{{ r.title }}</span>
-                <span class="res-meta">{{ r.versionNumber || r.filename }}</span>
+              <div v-for="r in resData[resTab]" :key="r.filename" class="res-item" :class="{ disabled: !r.enabled }">
+                <div class="res-info">
+                  <span class="res-title">{{ r.title }}</span>
+                  <span class="res-meta">{{ r.versionNumber || r.filename }}</span>
+                </div>
+                <div class="res-actions">
+                  <button
+                    class="res-btn"
+                    :class="r.enabled ? 'res-btn-disable' : 'res-btn-enable'"
+                    :title="r.enabled ? '禁用' : '启用'"
+                    @click="handleToggleResource(r, p.gameDir)"
+                  >{{ r.enabled ? '禁用' : '启用' }}</button>
+                  <button
+                    class="res-btn res-btn-delete"
+                    title="删除"
+                    @click="handleRemoveResource(r, p.gameDir)"
+                  >删除</button>
+                </div>
               </div>
             </div>
           </template>
@@ -332,8 +365,21 @@ async function onDropImport(event: DragEvent) {
   padding: 4px 6px; border-radius: 3px; font-size: 12px;
 }
 .res-item:hover { background: var(--bg-hover); }
-.res-title { color: var(--text-primary); }
-.res-meta { color: var(--text-muted); font-size: 11px; }
+.res-item.disabled { opacity: 0.5; }
+.res-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.res-title { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-meta { color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-actions { display: flex; gap: 4px; flex-shrink: 0; margin-left: 8px; }
+.res-btn {
+  padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border); background: none;
+  cursor: pointer; font-size: 10px; color: var(--text-primary); transition: all .15s;
+}
+.res-btn:hover { background: var(--bg-hover); }
+.res-btn-enable { color: var(--accent); border-color: var(--accent); }
+.res-btn-enable:hover { background: var(--accent); color: #fff; }
+.res-btn-disable { color: var(--text-muted); }
+.res-btn-delete { color: #e74c3c; border-color: #e74c3c; }
+.res-btn-delete:hover { background: #e74c3c; color: #fff; }
 
 /* slide transition */
 .slide-enter-active, .slide-leave-active { transition: all .2s ease; overflow: hidden; }

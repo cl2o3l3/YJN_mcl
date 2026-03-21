@@ -303,6 +303,7 @@ export interface InstalledResource {
   filename: string
   title: string
   installedAt: number
+  enabled: boolean
 }
 
 export interface ResourceSearchResult {

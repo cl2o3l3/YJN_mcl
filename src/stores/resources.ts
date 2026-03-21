@@ -112,6 +112,13 @@ export const useResourcesStore = defineStore('resources', () => {
     installedList.value = installedList.value.filter(r => r.filename !== filename)
   }
 
+  /** 启用/禁用已安装资源 */
+  async function toggle(type: ResourceType, gameDir: string, filename: string, enabled: boolean) {
+    await window.api.resources.toggle(type, gameDir, filename, enabled)
+    const item = installedList.value.find(r => r.filename === filename && r.type === type)
+    if (item) item.enabled = enabled
+  }
+
   /** 翻页 */
   function nextPage() {
     if (!searchResult.value) return
@@ -142,7 +149,7 @@ export const useResourcesStore = defineStore('resources', () => {
     // 自动填充
     autoGameVersion, autoLoader,
     // Actions
-    search, loadDetail, install, loadInstalled, remove,
+    search, loadDetail, install, loadInstalled, remove, toggle,
     nextPage, prevPage
   }
 })

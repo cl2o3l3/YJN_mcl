@@ -125,7 +125,8 @@ export async function installResource(
     versionNumber: projectMeta.versionNumber,
     filename: file.filename,
     title: projectMeta.title,
-    installedAt: Date.now()
+    installedAt: Date.now(),
+    enabled: true
   }
   if (existing >= 0) {
     meta.installed[existing] = record
@@ -151,12 +152,30 @@ export async function getInstalledResources(
 
   // 同时扫描目录中实际存在的文件（元数据中没有的也列出来）
   const knownFiles = new Set(fromMeta.map(r => r.filename))
-  const result: InstalledResource[] = [...fromMeta]
+  const result: InstalledResource[] = []
+
+  // 先处理元数据中的记录，检测 disabled 状态
+  for (const r of fromMeta) {
+    const enabledPath = path.join(dir, r.filename)
+    const disabledPath = enabledPath + '.disabled'
+    const enabledExists = await fsp.access(enabledPath).then(() => true, () => false)
+    const disabledExists = await fsp.access(disabledPath).then(() => true, () => false)
+    if (enabledExists) {
+      result.push({ ...r, enabled: true })
+    } else if (disabledExists) {
+      result.push({ ...r, enabled: false })
+      knownFiles.add(r.filename + '.disabled')
+    }
+    // 文件完全不存在则不加入
+  }
 
   try {
     const files = await fsp.readdir(dir)
     for (const f of files) {
-      if (knownFiles.has(f)) continue
+      // 判断是否为 disabled 文件
+      const isDisabled = f.endsWith('.disabled')
+      const baseName = isDisabled ? f.slice(0, -'.disabled'.length) : f
+      if (knownFiles.has(f) || knownFiles.has(baseName)) continue
       // 跳过非文件
       const stat = await fsp.stat(path.join(dir, f))
       if (!stat.isFile()) continue
@@ -167,9 +186,10 @@ export async function getInstalledResources(
         type,
         versionId: '',
         versionNumber: '',
-        filename: f,
-        title: f,
-        installedAt: Math.floor(stat.mtimeMs)
+        filename: baseName,
+        title: baseName,
+        installedAt: Math.floor(stat.mtimeMs),
+        enabled: !isDisabled
       })
     }
   } catch {
@@ -179,6 +199,28 @@ export async function getInstalledResources(
   return result
 }
 
+// ========== 启用/禁用资源 ==========
+
+export async function toggleResource(
+  type: ResourceType,
+  gameDir: string,
+  filename: string,
+  enabled: boolean
+): Promise<boolean> {
+  const dir = getResourceDir(gameDir, type)
+  const enabledPath = path.join(dir, filename)
+  const disabledPath = enabledPath + '.disabled'
+
+  if (enabled) {
+    // 启用: .disabled → 原名
+    await fsp.rename(disabledPath, enabledPath)
+  } else {
+    // 禁用: 原名 → .disabled
+    await fsp.rename(enabledPath, disabledPath)
+  }
+  return true
+}
+
 // ========== 删除资源 ==========
 
 export async function removeResource(
@@ -186,14 +228,13 @@ export async function removeResource(
   gameDir: string,
   filename: string
 ): Promise<boolean> {
-  const filePath = path.join(getResourceDir(gameDir, type), filename)
+  const dir = getResourceDir(gameDir, type)
+  const enabledPath = path.join(dir, filename)
+  const disabledPath = enabledPath + '.disabled'
 
-  // 删除文件
-  try {
-    await fsp.unlink(filePath)
-  } catch {
-    // 文件可能已不存在
-  }
+  // 删除文件 (可能是启用或禁用状态)
+  await fsp.unlink(enabledPath).catch(() => {})
+  await fsp.unlink(disabledPath).catch(() => {})
 
   // 更新元数据
   const meta = await readMetadata(gameDir)

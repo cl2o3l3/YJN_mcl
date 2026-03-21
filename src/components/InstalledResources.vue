@@ -29,6 +29,11 @@ async function onRemove(item: InstalledResource) {
   await rs.remove(item.type, gameDir(), item.filename)
 }
 
+async function onToggle(item: InstalledResource) {
+  if (!gameDir()) return
+  await rs.toggle(item.type, gameDir(), item.filename, !item.enabled)
+}
+
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString('zh-CN')
 }
@@ -69,14 +74,21 @@ watch(() => profiles.selected?.id, refresh)
       </div>
 
       <div v-else class="installed-list">
-        <div v-for="item in rs.installedList" :key="item.filename" class="installed-row">
+        <div v-for="item in rs.installedList" :key="item.filename" class="installed-row" :class="{ disabled: !item.enabled }">
           <div class="inst-info">
             <span class="inst-name">{{ item.title || item.filename }}</span>
             <span v-if="item.versionNumber" class="inst-ver">v{{ item.versionNumber }}</span>
             <span class="inst-date">{{ formatDate(item.installedAt) }}</span>
             <span v-if="!item.projectId" class="inst-tag external">手动安装</span>
           </div>
-          <button class="btn-danger btn-sm" @click="onRemove(item)">删除</button>
+          <div class="inst-actions">
+            <button
+              class="btn-secondary btn-sm"
+              :class="item.enabled ? '' : 'btn-accent'"
+              @click="onToggle(item)"
+            >{{ item.enabled ? '禁用' : '启用' }}</button>
+            <button class="btn-danger btn-sm" @click="onRemove(item)">删除</button>
+          </div>
         </div>
       </div>
     </template>
@@ -135,11 +147,27 @@ watch(() => profiles.selected?.id, refresh)
   border-radius: 6px;
   background: var(--bg-secondary);
 }
+.installed-row.disabled {
+  opacity: 0.5;
+}
 .inst-info {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+.inst-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.btn-accent {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-color: var(--accent) !important;
 }
 .inst-name {
   font-weight: 600;

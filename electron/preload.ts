@@ -134,6 +134,8 @@ const api = {
       ipcRenderer.invoke('resources:installed', type, gameDir) as Promise<InstalledResource[]>,
     remove: (type: ResourceType, gameDir: string, filename: string) =>
       ipcRenderer.invoke('resources:remove', type, gameDir, filename) as Promise<boolean>,
+    toggle: (type: ResourceType, gameDir: string, filename: string, enabled: boolean) =>
+      ipcRenderer.invoke('resources:toggle', type, gameDir, filename, enabled) as Promise<boolean>,
     dependencies: (version: ResourceVersion, platform: ResourcePlatform) =>
       ipcRenderer.invoke('resources:dependencies', version, platform) as Promise<{ required: ResourceProject[]; optional: ResourceProject[] }>,
     onInstallProgress: (callback: (event: { status: string; filename: string; error?: string }) => void) => {

@@ -23,7 +23,8 @@ import { getAllAccounts, saveAccount, removeAccount as removeAccountFromStore, g
 import { resolveApiRoot, getServerInfo, fullYggdrasilLogin, PRESET_SERVERS } from '../core/auth/yggdrasil'
 import {
   searchResources, getResourceDetail, getResourceVersions,
-  installResource, getInstalledResources, removeResource, resolveDependencies
+  installResource, getInstalledResources, removeResource, resolveDependencies,
+  toggleResource
 } from '../core/resource-manager'
 import { setCurseForgeApiKey, isCurseForgeConfigured } from '../core/curseforge-api'
 import { installModpack } from '../core/modpack-installer'
@@ -397,6 +398,9 @@ export function registerIpcHandlers() {
 
   ipcMain.handle('resources:remove', safe((_, type: ResourceType, gameDir: string, filename: string) =>
     removeResource(type, gameDir, filename)))
+
+  ipcMain.handle('resources:toggle', safe((_, type: ResourceType, gameDir: string, filename: string, enabled: boolean) =>
+    toggleResource(type, gameDir, filename, enabled)))
 
   ipcMain.handle('resources:dependencies', safe((_, version: ResourceVersion, platform: ResourcePlatform) =>
     resolveDependencies(version, platform)))
