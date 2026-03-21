@@ -173,11 +173,19 @@ export class SignalingClient {
     }, delay)
   }
 
-  /** 发送消息 */
+  /** 发送消息（连接断开时静默丢弃） */
   send(msg: Record<string, unknown>): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
     }
+  }
+
+  /** 发送消息（连接断开时抛出错误） */
+  sendChecked(msg: Record<string, unknown>): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('信令连接已断开，消息未送达')
+    }
+    this.ws.send(JSON.stringify(msg))
   }
 
   // ========== 业务方法 ==========
@@ -244,7 +252,7 @@ export class SignalingClient {
   }
 
   registerHost(mcPort: number): void {
-    this.send({ type: 'register-host', mcPort })
+    this.sendChecked({ type: 'register-host', mcPort })
   }
 
   unregisterHost(): void {

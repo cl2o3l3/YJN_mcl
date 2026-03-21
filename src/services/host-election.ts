@@ -180,16 +180,18 @@ export class HostElection {
       // store 层负责: 启动 LAN 检测 → 等待用户开 LAN → 返回端口
       const { port } = await this.events.onNeedBecomeHost(this.worldMeta)
 
-      // 注册为主机
-      const hostRegisteredPromise = this.waitForEvent('host-registered', 10000)
-      const hostConflictPromise = this.waitForEvent('host-conflict', 10000)
-      this.signaling.registerHost(port)
+      // LAN 检测期间可能断线重连，先确认连接状态
+      if (!this.signaling.connected) {
+        this.events.onLog('信令连接已断开，等待重连...')
+        await this.waitForReconnect(15000)
+        this.events.onLog('✓ 信令已重连')
+      }
 
-      // 等待确认
-      const result = await Promise.race([
-        hostRegisteredPromise,
-        hostConflictPromise,
-      ]) as any
+      // 注册为主机（单一 waiter 避免竞态和未处理的 rejection）
+      const result = await this.waitForOneOfEvents(
+        ['host-registered', 'host-conflict'], 10000,
+        () => this.signaling.registerHost(port)
+      )
 
       if (result.type === 'host-conflict') {
         // 已有其他人先一步注册
@@ -326,29 +328,77 @@ export class HostElection {
   // ========== 工具 ==========
 
   private waitForEvent(eventName: string, timeoutMs: number): Promise<any> {
+    return this.waitForOneOfEvents([eventName], timeoutMs)
+  }
+
+  /**
+   * 等待多个事件中任意一个，或 error 事件；超时后拒绝。
+   * 可选 sendFn 在注册监听后执行（避免先发消息再挂监听的竞态）。
+   */
+  private waitForOneOfEvents(
+    eventNames: string[],
+    timeoutMs: number,
+    sendFn?: () => void
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.signaling.off(eventName, handler)
+      let settled = false
+      const handlers = new Map<string, (msg: any) => void>()
+
+      const cleanup = () => {
+        clearTimeout(timeout)
+        for (const [name, h] of handlers) this.signaling.off(name, h)
         this.signaling.off('error', errorHandler)
-        reject(new Error(`等待 ${eventName} 超时 (${timeoutMs}ms)`))
+      }
+
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(new Error(`等待 ${eventNames.join('/')} 超时 (${timeoutMs}ms)`))
       }, timeoutMs)
 
-      const handler = (msg: any) => {
-        clearTimeout(timeout)
-        this.signaling.off(eventName, handler)
-        this.signaling.off('error', errorHandler)
-        resolve({ ...msg, type: eventName })
+      for (const name of eventNames) {
+        const handler = (msg: any) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          resolve({ ...msg, type: name })
+        }
+        handlers.set(name, handler)
+        this.signaling.on(name, handler)
       }
 
       const errorHandler = (msg: any) => {
-        clearTimeout(timeout)
-        this.signaling.off(eventName, handler)
-        this.signaling.off('error', errorHandler)
+        if (settled) return
+        settled = true
+        cleanup()
         reject(new Error(`信令错误: ${msg.message || '未知错误'}`))
       }
-
-      this.signaling.on(eventName, handler)
       this.signaling.on('error', errorHandler)
+
+      // 监听器全部挂好后再发送消息
+      if (sendFn) sendFn()
+    })
+  }
+
+  /**
+   * 等待信令重连（断线后自动重连机制会触发 'connected' 事件）
+   */
+  private waitForReconnect(timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.signaling.connected) { resolve(); return }
+
+      const timeout = setTimeout(() => {
+        this.signaling.off('connected', handler)
+        reject(new Error('信令重连超时，请检查网络后重试'))
+      }, timeoutMs)
+
+      const handler = () => {
+        clearTimeout(timeout)
+        this.signaling.off('connected', handler)
+        resolve()
+      }
+      this.signaling.on('connected', handler)
     })
   }
 
