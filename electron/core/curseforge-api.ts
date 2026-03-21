@@ -371,7 +371,7 @@ export async function getFileInfo(fileId: string, modId: string): Promise<CurseF
 
 function buildForgeCdnFallbackUrls(fileId: number, fileName: string): string[] {
   const major = Math.floor(fileId / 1000)
-  const minor = String(fileId % 1000).padStart(3, '0')
+  const minor = fileId % 1000
   const encoded = encodeURIComponent(fileName)
   return [
     `https://mediafilez.forgecdn.net/files/${major}/${minor}/${encoded}`,

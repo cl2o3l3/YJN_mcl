@@ -17,8 +17,8 @@ export async function fileSHA1(filePath: string): Promise<string> {
 }
 
 /** 带超时的 fetch (使用 Promise.race 避免 AbortController 兼容性问题) */
-async function fetchWithTimeout(url: string, timeoutMs = 30_000): Promise<Response> {
-  const fetchPromise = net.fetch(url)
+async function fetchWithTimeout(url: string, timeoutMs = 60_000): Promise<Response> {
+  const fetchPromise = net.fetch(url, { redirect: 'follow' })
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error(`Download timeout: ${url}`)), timeoutMs)
   )

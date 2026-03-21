@@ -104,9 +104,8 @@ export async function installModpack(
   const mcVersion = pack.mcVersion
   const modLoader = pack.modLoader
 
-  // 5. 安装基础游戏版本 (libraries + assets + client + natives)
-  //    注意: 必须装到 instanceDir，因为 profile.gameDir = instanceDir，启动时也从这里找
-  onProgress?.({ stage: 'installing-game', message: `正在安装 Minecraft ${mcVersion}...` })
+  // 5. 收集所有下载任务 (游戏文件 + mod 文件并行下载)
+  onProgress?.({ stage: 'installing-game', message: `正在准备下载任务...` })
   const versionJson = await getVersionJson(mcVersion, instanceDir)
   const librariesDir = path.join(instanceDir, 'libraries')
   const libTasks = collectLibraryTasks(versionJson, librariesDir)
@@ -116,29 +115,28 @@ export async function installModpack(
   if (clientTask) gameTasks.push(clientTask)
   const assetTasks = await collectAssetTasks(versionJson, instanceDir)
   gameTasks.push(...assetTasks)
-  await downloadBatch(gameTasks, 8)
-  const nativesDir = path.join(instanceDir, 'versions', mcVersion, 'natives')
-  await extractNatives(versionJson, librariesDir, nativesDir)
 
-  // 6. 安装 Mod Loader
-  if (modLoader) {
-    onProgress?.({ stage: 'installing-loader', message: `正在安装 ${modLoader.type} ${modLoader.version}...` })
-    await installModLoader(modLoader, mcVersion, instanceDir)
-  }
+  // Mod 文件下载任务
+  const modTasks = pack.downloadTasks.map(task => ({
+    ...task,
+    path: path.isAbsolute(task.path) ? task.path : path.join(instanceDir, task.path)
+  }))
 
-  // 7. 下载所有 mod 文件
-  if (pack.downloadTasks.length > 0) {
-    onProgress?.({ stage: 'downloading-files', message: `正在下载 ${pack.downloadTasks.length} 个文件...` })
+  // 合并所有任务并行下载
+  const allTasks = [...gameTasks, ...modTasks]
+  const gameCount = gameTasks.length
+  const modCount = modTasks.length
 
-    const downloadTasks = pack.downloadTasks.map(task => ({
-      ...task,
-      path: path.isAbsolute(task.path) ? task.path : path.join(instanceDir, task.path)
-    }))
+  if (allTasks.length > 0) {
+    onProgress?.({
+      stage: 'downloading-files',
+      message: `正在下载 ${gameCount} 个游戏文件 + ${modCount} 个 Mod 文件...`
+    })
 
-    const result = await downloadBatch(downloadTasks, 32, (p) => {
+    const result = await downloadBatch(allTasks, 32, (p) => {
       onProgress?.({
         stage: 'downloading-files',
-        message: `正在下载文件 (${p.completed}/${p.total})`,
+        message: `正在下载文件 (${p.completed}/${p.total}) — 游戏核心 ${gameCount} + Mod ${modCount}`,
         fileProgress: { total: p.total, completed: p.completed, failed: p.failed, speed: p.speed }
       })
     })
@@ -147,9 +145,19 @@ export async function installModpack(
       console.warn(`[modpack] ${result.failed.length} 个文件下载失败:`, result.failed)
       onProgress?.({
         stage: 'downloading-files',
-        message: `警告: ${result.failed.length} 个文件下载失败，部分 mod 可能缺失`
+        message: `警告: ${result.failed.length} 个文件下载失败，部分内容可能缺失`
       })
     }
+  }
+
+  // 6. 提取 natives
+  const nativesDir = path.join(instanceDir, 'versions', mcVersion, 'natives')
+  await extractNatives(versionJson, librariesDir, nativesDir)
+
+  // 7. 安装 Mod Loader (需要 vanilla version JSON 和 libraries 已下载)
+  if (modLoader) {
+    onProgress?.({ stage: 'installing-loader', message: `正在安装 ${modLoader.type} ${modLoader.version}...` })
+    await installModLoader(modLoader, mcVersion, instanceDir)
   }
 
   // 8. 提取 overrides 目录
