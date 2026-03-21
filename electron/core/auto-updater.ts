@@ -209,27 +209,28 @@ function portableHotSwap(newExePath: string): void {
   const backupExe = currentExe + '.old'
   const batPath = path.join(app.getPath('userData'), 'portable-update', '_update.bat')
 
-  // bat 脚本内容：
-  // 1. 等待当前进程退出
-  // 2. 备份旧 exe
-  // 3. 复制新 exe 到原位置
-  // 4. 删除备份和临时文件
-  // 5. 启动新 exe
   const batContent = `@echo off
 chcp 65001 >nul
 echo Updating YJN Launcher...
 set PID=${process.pid}
 
 :waitloop
-tasklist /FI "PID eq %PID%" 2>nul | find /I "%PID%" >nul
-if not errorlevel 1 (
+tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /B /C:"%PID%" >nul 2>nul
+if %errorlevel%==0 (
   timeout /t 1 /nobreak >nul
   goto waitloop
 )
+REM Double-check with a short delay
+timeout /t 2 /nobreak >nul
 
 echo Replacing executable...
 if exist "${backupExe}" del /f "${backupExe}"
 move /y "${currentExe}" "${backupExe}"
+if errorlevel 1 (
+  echo ERROR: Failed to move old exe, retrying...
+  timeout /t 2 /nobreak >nul
+  move /y "${currentExe}" "${backupExe}"
+)
 copy /y "${newExePath}" "${currentExe}"
 
 echo Starting new version...
@@ -247,12 +248,11 @@ del /f "%~f0"
   spawn('cmd.exe', ['/c', batPath], {
     detached: true,
     stdio: 'ignore',
-    cwd: currentDir,
-    windowsHide: true
+    cwd: currentDir
   }).unref()
 
-  // 退出应用
-  app.quit()
+  // 强制退出应用（跳过 before-quit / close 事件防止被拦截）
+  app.exit(0)
 }
 
 // ---- 对外 API ----
