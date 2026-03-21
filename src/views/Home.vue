@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, toRaw } from 'vue'
+import { ref, computed, onMounted, watch, toRaw } from 'vue'
 import { useProfilesStore } from '../stores/profiles'
 import { useAuthStore } from '../stores/auth'
 import { useLaunchStore } from '../stores/launch'
@@ -67,14 +67,9 @@ const selectedAvatar = computed(() => auth.selectedAccount ? getAvatar(auth.sele
 
 watch(() => auth.selectedAccount, (acc) => { if (acc) loadAvatar(acc) }, { immediate: true })
 
-let cleanupEvents: (() => void) | null = null
-
 onMounted(() => {
-  cleanupEvents = launch.listenGameEvents()
-})
-
-onUnmounted(() => {
-  cleanupEvents?.()
+  // Store 级监听已自动注册，此处确保 store 首次被使用后监听器就位
+  launch.ensureListeners()
 })
 
 async function handleLaunch() {

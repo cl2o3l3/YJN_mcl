@@ -36,25 +36,31 @@ export const useLaunchStore = defineStore('launch', () => {
     }
   }
 
-  function listenGameEvents() {
-    const unsubLog = window.api.launch.onLog((log) => {
+  // Store 级监听：不依赖组件生命周期，避免切换页面后 exit 事件丢失
+  let _listenersSetup = false
+
+  function ensureListeners() {
+    if (_listenersSetup) return
+    _listenersSetup = true
+
+    window.api.launch.onLog((log) => {
       gameLogs.value.push(log)
-      // 保留最近 500 行
       if (gameLogs.value.length > 500) gameLogs.value.shift()
     })
 
-    const unsubExit = window.api.launch.onExit((code) => {
+    window.api.launch.onExit((code) => {
       isRunning.value = false
       if (code !== 0 && code !== null) {
         error.value = `游戏异常退出 (code: ${code})`
       }
     })
-
-    return () => { unsubLog(); unsubExit() }
   }
+
+  // 首次创建 store 时立即注册
+  ensureListeners()
 
   return {
     isLaunching, isRunning, downloadProgress, gameLogs, error,
-    installAndLaunch, listenGameEvents
+    installAndLaunch, ensureListeners
   }
 })
