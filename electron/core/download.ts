@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import https from 'node:https'
+import http from 'node:http'
 import { net } from 'electron'
 import type { DownloadTask, DownloadProgress } from '../../src/types'
 
@@ -16,16 +18,67 @@ export async function fileSHA1(filePath: string): Promise<string> {
   })
 }
 
-/** 带超时的 fetch (使用 Promise.race 避免 AbortController 兼容性问题) */
-async function fetchWithTimeout(url: string, timeoutMs = 60_000): Promise<Response> {
-  const fetchPromise = net.fetch(url, { redirect: 'follow' })
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`Download timeout: ${url}`)), timeoutMs)
-  )
-  return Promise.race([fetchPromise, timeoutPromise])
+/** 原生 Node.js 流式下载 — 自动跟随重定向，全程超时保护 */
+function nativeDownload(
+  url: string,
+  destPath: string,
+  timeoutMs = 300_000,
+  maxRedirects = 5
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let redirectCount = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    function cleanup() {
+      if (timer) { clearTimeout(timer); timer = undefined }
+    }
+
+    function doRequest(reqUrl: string) {
+      const mod = reqUrl.startsWith('https') ? https : http
+      const req = mod.get(reqUrl, { timeout: 30_000 }, (res) => {
+        // 手动跟随 3xx 重定向
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume()
+          if (++redirectCount > maxRedirects) {
+            cleanup()
+            return reject(new Error(`Too many redirects: ${url}`))
+          }
+          doRequest(res.headers.location)
+          return
+        }
+
+        if (!res.statusCode || res.statusCode >= 400) {
+          res.resume()
+          cleanup()
+          return reject(new Error(`Download failed: ${res.statusCode} ${url}`))
+        }
+
+        const ws = fs.createWriteStream(destPath)
+        let bytes = 0
+
+        res.on('data', (chunk: Buffer) => { bytes += chunk.length })
+        res.pipe(ws)
+
+        ws.on('finish', () => { cleanup(); resolve(bytes) })
+        ws.on('error', (e) => { cleanup(); reject(e) })
+        res.on('error', (e) => { ws.destroy(); cleanup(); reject(e) })
+      })
+
+      req.on('error', (e) => { cleanup(); reject(e) })
+      req.on('timeout', () => { req.destroy(); cleanup(); reject(new Error(`Connection timeout: ${url}`)) })
+    }
+
+    // 全局超时 (整个下载过程)
+    timer = setTimeout(() => {
+      timer = undefined
+      reject(new Error(`Download timeout (${Math.round(timeoutMs / 1000)}s): ${url}`))
+    }, timeoutMs)
+
+    doRequest(url)
+  })
 }
 
-/** 单文件下载 (带 SHA1 校验 + 超时 + 重试) */
+/** 单文件下载 (流式 + SHA1 校验 + 超时 + 重试) */
 export async function downloadFile(
   url: string,
   destPath: string,
@@ -39,7 +92,6 @@ export async function downloadFile(
         const existing = await fileSHA1(destPath)
         if (existing === sha1) return stat.size
       } else {
-        // 无 SHA1 校验且文件已存在 (原子写入保证完整性), 直接跳过
         return stat.size
       }
     }
@@ -48,24 +100,19 @@ export async function downloadFile(
   await fsp.mkdir(path.dirname(destPath), { recursive: true })
 
   const tmpPath = destPath + '.tmp'
-  const response = await fetchWithTimeout(url)
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${url}`)
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer())
+  const bytes = await nativeDownload(url, tmpPath)
 
   // SHA1 校验
   if (sha1) {
-    const hash = crypto.createHash('sha1').update(buffer).digest('hex')
+    const hash = await fileSHA1(tmpPath)
     if (hash !== sha1) {
+      await fsp.unlink(tmpPath).catch(() => {})
       throw new Error(`SHA1 mismatch for ${url}: expected ${sha1}, got ${hash}`)
     }
   }
 
-  await fsp.writeFile(tmpPath, buffer)
   await fsp.rename(tmpPath, destPath)
-  return buffer.length
+  return bytes
 }
 
 /** JSON GET 请求 */
@@ -197,9 +244,10 @@ export async function downloadBatch(
             progress.completed++
             totalBytes += bytes
           })
-          .catch(() => {
+          .catch((err) => {
             progress.failed++
-            failed.push(task.url)
+            failed.push(task.url || task.fallbackUrls?.[0] || path.basename(task.path))
+            console.warn(`[download] failed: ${path.basename(task.path)}`, err.message)
           })
           .finally(() => {
             activeCount--
