@@ -97,21 +97,14 @@ onMounted(() => {
 
 // ========== 共享世界 ==========
 const swJoinCode = ref('')
-const swCreateMode = ref<'instance' | 'manual'>('instance')
-const swCreateForm = ref({
-  profileId: '',
-  worldName: '',
-  mcVersion: '',
-  loaderType: 'vanilla',
-  gameDir: '',
-})
-const swJoinProfileId = ref('')
-const swCreating = ref(false)
 const swJoining = ref(false)
+const swCreating = ref(false)
 const swTab = ref<'create' | 'join' | 'list'>('list')
+const swSelectedProfileId = ref('')  // 进入房间后选择的实例
 
-function profileLoaderType(profile: GameProfile): string {
-  return profile.modLoader?.type || 'vanilla'
+function formatWorldLoader(modLoader?: GameProfile['modLoader'] | null): string {
+  if (!modLoader) return '原版'
+  return `${modLoader.type} ${modLoader.version}`
 }
 
 function formatProfileLoader(profile?: GameProfile | null): string {
@@ -119,104 +112,16 @@ function formatProfileLoader(profile?: GameProfile | null): string {
   return `${profile.modLoader.type} ${profile.modLoader.version}`
 }
 
-function formatWorldLoader(modLoader?: GameProfile['modLoader'] | null): string {
-  if (!modLoader) return '原版'
-  return `${modLoader.type} ${modLoader.version}`
-}
-
-const swVersionOptions = computed(() =>
-  Array.from(new Set(profiles.profiles.map(profile => profile.versionId))).sort((a, b) => b.localeCompare(a))
+const swSelectedProfile = computed(() =>
+  profiles.profiles.find(profile => profile.id === swSelectedProfileId.value) || null
 )
-
-const swLoaderOptions = computed(() => {
-  const source = swCreateForm.value.mcVersion
-    ? profiles.profiles.filter(profile => profile.versionId === swCreateForm.value.mcVersion)
-    : profiles.profiles
-  const options = new Set<string>(['vanilla'])
-  for (const profile of source) {
-    if (profile.modLoader?.type) {
-      options.add(profile.modLoader.type)
-    }
-  }
-  return Array.from(options)
-})
-
-const swFilteredProfiles = computed(() =>
-  profiles.profiles.filter(profile => {
-    const versionOk = !swCreateForm.value.mcVersion || profile.versionId === swCreateForm.value.mcVersion
-    const loaderOk = profileLoaderType(profile) === swCreateForm.value.loaderType
-    return versionOk && loaderOk
-  })
-)
-
-const swSelectedCreateProfile = computed(() =>
-  profiles.profiles.find(profile => profile.id === swCreateForm.value.profileId) || null
-)
-
-const swSelectedJoinProfile = computed(() =>
-  profiles.profiles.find(profile => profile.id === swJoinProfileId.value) || null
-)
-
-function applyCreateProfile(profile: GameProfile) {
-  swCreateForm.value.profileId = profile.id
-  swCreateForm.value.mcVersion = profile.versionId
-  swCreateForm.value.loaderType = profileLoaderType(profile)
-  swCreateForm.value.gameDir = profile.gameDir
-  if (!swCreateForm.value.worldName) {
-    swCreateForm.value.worldName = profile.name
-  }
-}
-
-watch(() => profiles.selected, (profile) => {
-  if (!profile) return
-  if (!swCreateForm.value.profileId) {
-    applyCreateProfile(profile)
-  }
-  if (!swJoinProfileId.value) {
-    swJoinProfileId.value = profile.id
-  }
-}, { immediate: true })
-
-watch(() => swCreateForm.value.profileId, (profileId) => {
-  const profile = profiles.profiles.find(item => item.id === profileId)
-  if (!profile) return
-  applyCreateProfile(profile)
-})
-
-watch(() => swCreateForm.value.mcVersion, (versionId) => {
-  // 仅手动模式下级联
-  if (swCreateMode.value !== 'manual') return
-  if (!versionId) return
-  if (!swLoaderOptions.value.includes(swCreateForm.value.loaderType)) {
-    swCreateForm.value.loaderType = 'vanilla'
-  }
-  const selected = swSelectedCreateProfile.value
-  if (selected && selected.versionId !== versionId) {
-    swCreateForm.value.profileId = ''
-    swCreateForm.value.gameDir = ''
-  }
-})
-
-watch(() => swCreateForm.value.loaderType, (loaderType) => {
-  // 仅手动模式下级联
-  if (swCreateMode.value !== 'manual') return
-  const selected = swSelectedCreateProfile.value
-  if (selected && profileLoaderType(selected) !== loaderType) {
-    swCreateForm.value.profileId = ''
-    swCreateForm.value.gameDir = ''
-  }
-})
 
 async function handleCreateSharedWorld() {
-  if (!auth.selectedAccount || !swSelectedCreateProfile.value) return
+  if (!auth.selectedAccount) return
   swCreating.value = true
   try {
     await sw.createWorld({
       playerName: auth.selectedAccount.username,
-      gameDir: swSelectedCreateProfile.value.gameDir,
-      worldName: swCreateForm.value.worldName,
-      mcVersion: swSelectedCreateProfile.value.versionId,
-      modLoader: swSelectedCreateProfile.value.modLoader,
     })
   } catch { /* error in store */ }
   swCreating.value = false
@@ -229,7 +134,6 @@ async function handleJoinSharedWorld() {
     await sw.joinWorld({
       playerName: auth.selectedAccount.username,
       roomCode: swJoinCode.value.trim().toUpperCase(),
-      gameDir: swSelectedJoinProfile.value?.gameDir || settings.defaultGameDir,
     })
   } catch { /* error in store */ }
   swJoining.value = false
@@ -242,6 +146,11 @@ async function handleLeaveSharedWorld() {
 function copySWCode() {
   if (sw.roomCode) navigator.clipboard.writeText(sw.roomCode)
 }
+
+watch(swSelectedProfileId, (profileId) => {
+  const profile = profiles.profiles.find(p => p.id === profileId)
+  if (profile) sw.setGameDir(profile.gameDir)
+})
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -900,77 +809,11 @@ function rttClass(rtt: number): string {
         <div v-if="swTab === 'create'" class="sw-section">
           <div class="card">
             <h3>创建共享世界</h3>
-            <!-- 创建方式切换 -->
-            <div class="sw-create-mode-tabs">
-              <button :class="['sw-mode-btn', { active: swCreateMode === 'instance' }]" @click="swCreateMode = 'instance'">
-                从实例创建
-              </button>
-              <button :class="['sw-mode-btn', { active: swCreateMode === 'manual' }]" @click="swCreateMode = 'manual'">
-                手动配置
-              </button>
-            </div>
+            <p class="text-muted text-xs">创建房间后再选择实例和启动游戏。</p>
             <div class="sw-form">
-              <!-- 模式 A：从实例创建 -->
-              <template v-if="swCreateMode === 'instance'">
-                <label>
-                  选择实例
-                  <select v-model="swCreateForm.profileId" class="input" :disabled="profiles.profiles.length === 0">
-                    <option value="">选择一个已有实例</option>
-                    <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
-                      {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
-                    </option>
-                  </select>
-                </label>
-                <p v-if="swSelectedCreateProfile" class="text-muted text-xs">
-                  {{ swSelectedCreateProfile.versionId }} · {{ formatProfileLoader(swSelectedCreateProfile) }} · {{ swSelectedCreateProfile.gameDir }}
-                </p>
-                <p v-else-if="profiles.profiles.length === 0" class="text-muted text-xs">
-                  还没有可用实例，请先到实例页面创建或导入实例。
-                </p>
-              </template>
-              <!-- 模式 B：手动配置 -->
-              <template v-else>
-                <label>
-                  MC 版本
-                  <select v-model="swCreateForm.mcVersion" class="input" :disabled="profiles.profiles.length === 0">
-                    <option value="">选择版本</option>
-                    <option v-for="version in swVersionOptions" :key="version" :value="version">{{ version }}</option>
-                  </select>
-                </label>
-                <label>
-                  Mod Loader
-                  <select v-model="swCreateForm.loaderType" class="input" :disabled="profiles.profiles.length === 0">
-                    <option v-for="loader in swLoaderOptions" :key="loader" :value="loader">
-                      {{ loader === 'vanilla' ? '原版' : loader }}
-                    </option>
-                  </select>
-                </label>
-                <label>
-                  使用实例
-                  <select v-model="swCreateForm.profileId" class="input" :disabled="swFilteredProfiles.length === 0">
-                    <option value="">选择匹配的实例</option>
-                    <option v-for="profile in swFilteredProfiles" :key="profile.id" :value="profile.id">
-                      {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
-                    </option>
-                  </select>
-                </label>
-                <p v-if="swSelectedCreateProfile" class="text-muted text-xs">
-                  实例目录：{{ swSelectedCreateProfile.gameDir }}
-                </p>
-                <p v-else-if="profiles.profiles.length > 0" class="text-muted text-xs">
-                  先选择一个与你的版本和 Loader 匹配的本地实例。
-                </p>
-                <p v-else class="text-muted text-xs">
-                  还没有可用实例，请先到实例页面创建或导入实例。
-                </p>
-              </template>
-              <label>
-                世界名称
-                <input v-model="swCreateForm.worldName" placeholder="我的共享世界" class="input" />
-              </label>
               <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
-              <button class="btn-primary" @click="handleCreateSharedWorld" :disabled="swCreating || !swCreateForm.worldName || !swSelectedCreateProfile">
-                {{ swCreating ? '创建中...' : '创建世界' }}
+              <button class="btn-primary" @click="handleCreateSharedWorld" :disabled="swCreating">
+                {{ swCreating ? '创建中...' : '创建房间' }}
               </button>
             </div>
           </div>
@@ -990,18 +833,6 @@ function rttClass(rtt: number): string {
                   </button>
                 </div>
               </label>
-              <label>
-                本地实例 <span class="text-muted text-xs">(可选)</span>
-                <select v-model="swJoinProfileId" class="input" :disabled="profiles.profiles.length === 0">
-                  <option value="">使用默认游戏目录</option>
-                  <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
-                    {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
-                  </option>
-                </select>
-              </label>
-              <p v-if="swSelectedJoinProfile" class="text-muted text-xs">
-                当前实例：{{ swSelectedJoinProfile.gameDir }}
-              </p>
               <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
             </div>
           </div>
@@ -1011,11 +842,11 @@ function rttClass(rtt: number): string {
       <!-- 已激活: 共享世界视图 -->
       <template v-else>
         <div class="sw-active-view">
-          <!-- 世界信息 -->
+          <!-- 房间信息 -->
           <div class="card sw-header-card">
             <div class="room-header">
               <div>
-                <h3>{{ sw.currentWorld?.worldName || '共享世界' }}</h3>
+                <h3>{{ sw.currentWorld?.worldName || '共享房间' }}</h3>
                 <div class="room-code-row">
                   <span class="room-code" @click="copySWCode" title="点击复制">{{ sw.roomCode }}</span>
                   <button class="btn-copy" @click="copySWCode">复制</button>
@@ -1027,8 +858,31 @@ function rttClass(rtt: number): string {
                 </span>
               </div>
             </div>
-            <div class="sw-meta text-muted text-xs">
-              {{ sw.currentWorld?.mcVersion }} · {{ formatWorldLoader(sw.currentWorld?.modLoader) }}
+            <div v-if="sw.currentWorld?.mcVersion" class="sw-meta text-muted text-xs">
+              {{ sw.currentWorld.mcVersion }} · {{ formatWorldLoader(sw.currentWorld.modLoader) }}
+            </div>
+          </div>
+
+          <!-- 选择实例（进入房间后） -->
+          <div class="card mt">
+            <h3>选择实例</h3>
+            <p class="text-muted text-xs">
+              {{ sw.isHost
+                ? '选择一个实例并启动 MC，然后在游戏中开启「对局域网开放」。'
+                : sw.currentWorld?.mcVersion
+                  ? '主机使用的版本：' + sw.currentWorld.mcVersion + ' · ' + formatWorldLoader(sw.currentWorld.modLoader) + '，请选择匹配的实例。'
+                  : '等待主机选择版本并开启局域网...' }}
+            </p>
+            <div class="sw-form mt-sm">
+              <select v-model="swSelectedProfileId" class="input" :disabled="profiles.profiles.length === 0">
+                <option value="">选择一个本地实例</option>
+                <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
+                  {{ profile.name }} · {{ profile.versionId }} · {{ formatProfileLoader(profile) }}
+                </option>
+              </select>
+              <p v-if="swSelectedProfile" class="text-muted text-xs">
+                实例目录：{{ swSelectedProfile.gameDir }}
+              </p>
             </div>
           </div>
 

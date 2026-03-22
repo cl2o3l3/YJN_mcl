@@ -7,7 +7,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { SignalingClient } from '../services/signaling-client'
-import { HostElection, type ElectionState, type HostInfo, type WorldMeta } from '../services/host-election'
+import { HostElection, type ElectionState, type HostInfo } from '../services/host-election'
 import { WebRTCManager } from '../services/webrtc-manager'
 import type { TransferProgress } from '../services/save-transfer'
 import type { ModLoaderInfo, P2PPeer } from '../types'
@@ -90,82 +90,26 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
-  // ========== 创建共享世界 ==========
+  // ========== 创建房间 ==========
 
   async function createWorld(config: {
     playerName: string
-    gameDir: string
-    worldName: string
-    mcVersion: string
-    modLoader?: ModLoaderInfo
   }): Promise<string> {
     error.value = ''
 
     try {
-      // 1. 连接信令
       signaling = new SignalingClient()
       await signaling.connect(settings.signalingServer)
       addLog('已连接到信令服务器')
 
-      const worldMeta: WorldMeta = {
-        worldName: config.worldName,
-        mcVersion: config.mcVersion,
-        modLoader: config.modLoader,
-      }
+      election = new HostElection(signaling, createElectionEvents())
 
-      // 2. 创建选举
-      election = new HostElection(signaling, {
-        onStateChange: (state) => { electionState.value = state },
-        onHostChange: (host) => { hostInfo.value = host },
-        onNeedTransferHost: async (worldName) => {
-          addLog(`正在打包存档 ${worldName}...`)
-          const packed = await window.api.save.pack(
-            `${config.gameDir}/saves/${worldName}`
-          )
-          return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1 }
-        },
-        onNeedReceiveSave: async (archivePath, sha1, worldName) => {
-          addLog(`正在解包存档 ${worldName}...`)
-          const targetDir = `${config.gameDir}/saves/${worldName}`
-          await window.api.save.unpack(archivePath, targetDir, sha1)
-          addLog('✓ 存档已解包')
-        },
-        onTransferProgress: (progress) => {
-          transferProgress.value = progress
-        },
-        onCheckLocalSave: async (worldName) => {
-          try {
-            const saves = await window.api.save.list(config.gameDir)
-            return saves.some(s => s.name === worldName)
-          } catch {
-            return false
-          }
-        },
-        onLog: addLog,
-      })
-
-      // 3. 创建世界
-      const code = await election.createWorld(config.playerName, worldMeta)
+      const code = await election.createWorld(config.playerName)
       roomCode.value = code
-      myRole.value = 'host'
-      currentGameDir = config.gameDir
 
-      // 4. 启动 P2P 管线 (房主等待客人连接)
       startP2PPipeline()
 
-      // 5. 保存到世界列表
-      const world: SharedWorld = {
-        roomCode: code,
-        worldName: config.worldName,
-        mcVersion: config.mcVersion,
-        modLoader: config.modLoader,
-        localSavePath: `${config.gameDir}/saves/${config.worldName}`,
-        createdAt: Date.now(),
-      }
-      currentWorld.value = world
-      addWorldToList(world)
-
-      addLog(`✓ 共享世界已创建，房间码: ${code}`)
+      addLog(`✓ 房间已创建，房间码: ${code}`)
       return code
     } catch (e: any) {
       error.value = e.message
@@ -175,12 +119,11 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
-  // ========== 加入共享世界 ==========
+  // ========== 加入房间 ==========
 
   async function joinWorld(config: {
     playerName: string
     roomCode: string
-    gameDir: string
   }): Promise<void> {
     error.value = ''
 
@@ -189,69 +132,79 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       await signaling.connect(settings.signalingServer)
       addLog('已连接到信令服务器')
 
-      // 先加入房间获取世界信息
-      const worldMeta: WorldMeta = {
-        worldName: '',
-        mcVersion: '',
-        modLoader: undefined,
-      }
-
-      election = new HostElection(signaling, {
-        onStateChange: (state) => { electionState.value = state },
-        onHostChange: (host) => { hostInfo.value = host },
-        onNeedTransferHost: async (worldName) => {
-          const packed = await window.api.save.pack(
-            `${config.gameDir}/saves/${worldName}`
-          )
-          return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1 }
-        },
-        onNeedReceiveSave: async (archivePath, sha1, worldName) => {
-          const targetDir = `${config.gameDir}/saves/${worldName}`
-          await window.api.save.unpack(archivePath, targetDir, sha1)
-        },
-        onTransferProgress: (progress) => {
-          transferProgress.value = progress
-        },
-        onCheckLocalSave: async (worldName) => {
-          try {
-            const saves = await window.api.save.list(config.gameDir)
-            return saves.some(s => s.name === worldName)
-          } catch {
-            return false
-          }
-        },
-        onLog: addLog,
-      })
+      election = new HostElection(signaling, createElectionEvents())
 
       roomCode.value = config.roomCode
 
-      await election.joinWorld(config.roomCode, config.playerName, worldMeta)
+      await election.joinWorld(config.roomCode, config.playerName)
       myRole.value = election.getRole()
-      currentGameDir = config.gameDir
 
-      // 启动 P2P 管线 (客户端向房主发起连接)
       startP2PPipeline()
 
-      // 从选举中获取世界信息
+      // 从服务端获取 worldMeta
       const meta = election.getWorldMeta()
-      if (meta) {
-        const world: SharedWorld = {
+      if (meta && meta.worldName) {
+        currentWorld.value = {
           roomCode: config.roomCode,
           worldName: meta.worldName,
           mcVersion: meta.mcVersion,
           modLoader: meta.modLoader,
           createdAt: Date.now(),
         }
-        currentWorld.value = world
-        addWorldToList(world)
       }
 
-      addLog(`✓ 已加入共享世界 (${config.roomCode})`)
+      addLog(`✓ 已加入房间 (${config.roomCode})`)
     } catch (e: any) {
       error.value = e.message
       addLog(`加入失败: ${e.message}`)
       await cleanupSession(false)
       throw e
+    }
+  }
+
+  /**
+   * 设置游戏目录（进入房间后选择实例时调用）
+   */
+  function setGameDir(gameDir: string) {
+    currentGameDir = gameDir
+    addLog(`已设置游戏目录: ${gameDir}`)
+  }
+
+  /**
+   * 创建公共选举事件回调
+   */
+  function createElectionEvents() {
+    return {
+      onStateChange: (state: ElectionState) => { electionState.value = state },
+      onHostChange: (host: HostInfo | null) => { hostInfo.value = host },
+      onNeedTransferHost: async (worldName: string) => {
+        addLog(`正在打包存档 ${worldName}...`)
+        if (!currentGameDir) throw new Error('未设置游戏目录')
+        const packed = await window.api.save.pack(
+          `${currentGameDir}/saves/${worldName}`
+        )
+        return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1 }
+      },
+      onNeedReceiveSave: async (archivePath: string, sha1: string, worldName: string) => {
+        addLog(`正在解包存档 ${worldName}...`)
+        if (!currentGameDir) throw new Error('未设置游戏目录')
+        const targetDir = `${currentGameDir}/saves/${worldName}`
+        await window.api.save.unpack(archivePath, targetDir, sha1)
+        addLog('✓ 存档已解包')
+      },
+      onTransferProgress: (progress: TransferProgress) => {
+        transferProgress.value = progress
+      },
+      onCheckLocalSave: async (worldName: string) => {
+        if (!currentGameDir) return false
+        try {
+          const saves = await window.api.save.list(currentGameDir)
+          return saves.some((s: any) => s.name === worldName)
+        } catch {
+          return false
+        }
+      },
+      onLog: addLog,
     }
   }
 
@@ -502,16 +455,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
   // ========== 世界列表管理 ==========
 
-  function addWorldToList(world: SharedWorld) {
-    const existing = worlds.value.findIndex(w => w.roomCode === world.roomCode)
-    if (existing >= 0) {
-      worlds.value[existing] = { ...worlds.value[existing], ...world }
-    } else {
-      worlds.value.push(world)
-    }
-    persistWorlds()
-  }
-
   function removeWorldFromList(roomCode: string) {
     worlds.value = worlds.value.filter(w => w.roomCode !== roomCode)
     persistWorlds()
@@ -575,6 +518,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     createWorld,
     joinWorld,
     leaveWorld,
+    setGameDir,
     removeWorldFromList,
 
     // 工具

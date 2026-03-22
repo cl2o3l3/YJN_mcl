@@ -81,6 +81,8 @@ export class HostElection {
   getRole(): 'host' | 'client' | null { return this.myRole }
   getWorldMeta(): WorldMeta | null { return this.worldMeta }
 
+  setWorldMeta(meta: WorldMeta): void { this.worldMeta = meta }
+
   private setState(state: ElectionState) {
     this.state = state
     this.events.onStateChange(state)
@@ -97,8 +99,7 @@ export class HostElection {
    * 加入共享世界，查询主机状态
    * 不再自动竞选 — 等待 LAN 检测后由 store 层调用 becomeHost(port)
    */
-  async joinWorld(roomCode: string, playerName: string, worldMeta: WorldMeta): Promise<void> {
-    this.worldMeta = worldMeta
+  async joinWorld(roomCode: string, playerName: string): Promise<void> {
     this.setState('joining')
 
     // 监听信令事件
@@ -126,17 +127,15 @@ export class HostElection {
       this.setHost(hostInfo.host)
       this.myRole = 'client'
       this.setState('connected')
-
-      if (hostInfo.worldMeta) {
-        this.worldMeta = hostInfo.worldMeta
-      }
     } else {
       // 无主机 → 等待有人开启局域网
-      if (hostInfo.worldMeta) {
-        this.worldMeta = hostInfo.worldMeta
-      }
       this.events.onLog('当前无主机，等待有人在 MC 中开启局域网...')
       this.setState('waiting-host')
+    }
+
+    // 保存服务端返回的 worldMeta
+    if (hostInfo.worldMeta) {
+      this.worldMeta = hostInfo.worldMeta
     }
   }
 
@@ -144,8 +143,8 @@ export class HostElection {
    * 创建共享世界 — 只创建房间，立即返回房间码
    * 不再阻塞等待 LAN，由 store 层被动检测 LAN 后调用 becomeHost(port)
    */
-  async createWorld(playerName: string, worldMeta: WorldMeta): Promise<string> {
-    this.worldMeta = worldMeta
+  async createWorld(playerName: string, worldMeta?: WorldMeta): Promise<string> {
+    if (worldMeta) this.worldMeta = worldMeta
     this.setState('joining')
 
     this.setupListeners()
@@ -171,8 +170,6 @@ export class HostElection {
    * 成为主机 — 外部检测到 LAN 端口后调用，直接向信令服务器注册
    */
   async becomeHost(port: number): Promise<void> {
-    if (!this.worldMeta) throw new Error('worldMeta 未设置')
-
     this.setState('becoming-host')
     this.events.onLog('正在注册为主机...')
 

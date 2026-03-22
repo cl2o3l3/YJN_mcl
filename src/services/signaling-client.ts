@@ -75,9 +75,18 @@ export class SignalingClient {
     // 先用 HTTP 唤醒服务器（处理 Render 免费实例休眠）
     await this.wakeUpServer(url)
 
-    return new Promise((resolve, reject) => {
-      this.doConnect(resolve, reject)
-    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.doConnect(resolve, reject)
+      })
+    } catch (firstErr) {
+      // 首次 WS 连接可能在 cold start 未完全就绪时失败，重试一次
+      this.emit('waking-up')
+      await new Promise(r => setTimeout(r, 3000))
+      await new Promise<void>((resolve, reject) => {
+        this.doConnect(resolve, reject)
+      })
+    }
   }
 
   private doConnect(
@@ -92,13 +101,13 @@ export class SignalingClient {
       return
     }
 
-    // 15 秒连接超时
+    // 30 秒连接超时（Render 免费实例 cold start 较慢）
     const connectTimeout = setTimeout(() => {
       if (!this._connected) {
         this.ws?.close()
         reject?.(new Error('WebSocket 连接超时，请稍后重试'))
       }
-    }, 15000)
+    }, 30000)
 
     const firstMessage = (event: MessageEvent) => {
       try {
@@ -244,11 +253,11 @@ export class SignalingClient {
 
   // ========== 共享世界 (Persistent Room) ==========
 
-  createPersistentRoom(playerName: string, worldMeta: {
+  createPersistentRoom(playerName: string, worldMeta?: {
     worldName: string; mcVersion: string; modLoader?: { type: string; version: string }
   }): void {
     this.lastPlayerName = playerName
-    this.send({ type: 'create-persistent-room', playerName, worldMeta })
+    this.send({ type: 'create-persistent-room', playerName, ...(worldMeta ? { worldMeta } : {}) })
   }
 
   registerHost(mcPort: number): void {
