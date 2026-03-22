@@ -39,8 +39,9 @@ export class SaveSender {
    * @param pc 已连接的 RTCPeerConnection
    * @param fileData 完整文件数据
    * @param sha1 校验和
+   * @param worldName MC 存档目录名
    */
-  async send(pc: RTCPeerConnection, fileData: ArrayBuffer, sha1: string): Promise<void> {
+  async send(pc: RTCPeerConnection, fileData: ArrayBuffer, sha1: string, worldName: string): Promise<void> {
     const totalSize = fileData.byteLength
     const totalChunks = Math.ceil(totalSize / CHUNK_SIZE)
 
@@ -66,6 +67,7 @@ export class SaveSender {
           sha1,
           chunkSize: CHUNK_SIZE,
           totalChunks,
+          worldName,
         })
         dc.send(meta)
       }
@@ -160,7 +162,7 @@ export class SaveReceiver {
    * @param pc 已连接的 RTCPeerConnection
    * @returns 接收到的文件数据
    */
-  listen(pc: RTCPeerConnection): Promise<{ data: ArrayBuffer; sha1: string }> {
+  listen(pc: RTCPeerConnection): Promise<{ data: ArrayBuffer; sha1: string; worldName: string }> {
     return new Promise((resolve, reject) => {
       const handler = (event: RTCDataChannelEvent) => {
         if (event.channel.label !== SAVE_CHANNEL_LABEL) return
@@ -169,7 +171,7 @@ export class SaveReceiver {
         const dc = event.channel
         dc.binaryType = 'arraybuffer'
 
-        let meta: { totalSize: number; sha1: string; chunkSize: number; totalChunks: number } | null = null
+        let meta: { totalSize: number; sha1: string; chunkSize: number; totalChunks: number; worldName: string } | null = null
         const chunks: ArrayBuffer[] = []
         let receivedBytes = 0
         const startTime = Date.now()
@@ -187,6 +189,7 @@ export class SaveReceiver {
                   sha1: msg.sha1,
                   chunkSize: msg.chunkSize,
                   totalChunks: msg.totalChunks,
+                  worldName: msg.worldName || 'shared-world',
                 }
                 // 确认收到 meta
                 dc.send(JSON.stringify({ type: '__SAVE_ACK' }))
@@ -211,7 +214,7 @@ export class SaveReceiver {
 
                   if (match) {
                     this.onComplete(true)
-                    resolve({ data: result.buffer, sha1: meta!.sha1 })
+                    resolve({ data: result.buffer, sha1: meta!.sha1, worldName: meta!.worldName })
                   } else {
                     this.onComplete(false, 'SHA1 不匹配')
                     reject(new Error('SHA1 mismatch'))

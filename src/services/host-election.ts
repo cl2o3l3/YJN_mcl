@@ -45,7 +45,7 @@ export interface ElectionEvents {
    * 主机要离开 — 打包存档用于传输
    * 返回打包结果
    */
-  onNeedTransferHost: (worldName: string) => Promise<{ archivePath: string; size: number; sha1: string }>
+  onNeedTransferHost: (worldName: string) => Promise<{ archivePath: string; size: number; sha1: string; worldName: string }>
   /**
    * 需要接收并解包存档 (即将成为新主机)
    */
@@ -54,7 +54,7 @@ export interface ElectionEvents {
    * 将打包好的存档通过 WebRTC 传输给候选人
    * 返回是否成功
    */
-  onTransferSaveToPeer: (candidatePeerId: string, archivePath: string, sha1: string, size: number) => Promise<boolean>
+  onTransferSaveToPeer: (candidatePeerId: string, archivePath: string, sha1: string, size: number, worldName: string) => Promise<boolean>
   /** 存档传输进度 */
   onTransferProgress: (progress: TransferProgress) => void
   /** 检查本地是否有缓存存档 */
@@ -256,6 +256,11 @@ export class HostElection {
       // 打包存档 (此时用户的 MC 应已退出或存档已落盘)
       const packed = await this.events.onNeedTransferHost(this.worldMeta.worldName)
 
+      // 用真实存档名更新 worldMeta (包名可能与 profile 名不同)
+      if (packed.worldName && packed.worldName !== this.worldMeta.worldName) {
+        this.worldMeta.worldName = packed.worldName
+      }
+
       // 尝试将存档传输给候选人
       const candidates = this.roomPeers.filter(p => p.id !== this.signaling.peerId)
       if (candidates.length > 0) {
@@ -263,7 +268,7 @@ export class HostElection {
         this.events.onLog(`正在向 ${candidate.name} 传输存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
         try {
           const ok = await this.events.onTransferSaveToPeer(
-            candidate.id, packed.archivePath, packed.sha1, packed.size
+            candidate.id, packed.archivePath, packed.sha1, packed.size, packed.worldName
           )
           if (ok) {
             this.events.onLog('✓ 存档已传输给候选人')
@@ -314,6 +319,24 @@ export class HostElection {
     this.signaling.on('host-changed', onHostChanged)
     this.cleanups.push(() => this.signaling.off('host-changed', onHostChanged))
 
+    // peer-joined: 维护 roomPeers 列表
+    const onPeerJoined = (msg: any) => {
+      const id = String(msg.peerId || '')
+      const name = String(msg.peerName || '')
+      if (id && !this.roomPeers.some(p => p.id === id)) {
+        this.roomPeers.push({ id, name })
+      }
+    }
+    this.signaling.on('peer-joined', onPeerJoined)
+    this.cleanups.push(() => this.signaling.off('peer-joined', onPeerJoined))
+
+    // peer-left: 维护 roomPeers 列表
+    const onPeerLeft = (msg: any) => {
+      this.roomPeers = this.roomPeers.filter(p => p.id !== msg.peerId)
+    }
+    this.signaling.on('peer-left', onPeerLeft)
+    this.cleanups.push(() => this.signaling.off('peer-left', onPeerLeft))
+
     // room-closed
     const onRoomClosed = () => {
       this.events.onLog('房间已关闭')
@@ -330,14 +353,22 @@ export class HostElection {
   private async tryAutoElection(): Promise<void> {
     if (!this.worldMeta) return
 
-    // 稍等一下，确认确实没有新主机
-    await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
+    // 等待足够时间让存档解包完成
+    await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000))
 
     // 再次确认仍然没有主机
     if (this.currentHost) return
 
-    // 检查本地是否有缓存存档
-    const hasLocal = await this.events.onCheckLocalSave(this.worldMeta.worldName)
+    // 检查本地是否有缓存存档（可能刚解包完成）
+    let hasLocal = await this.events.onCheckLocalSave(this.worldMeta.worldName)
+    if (!hasLocal) {
+      // 重试一次——存档可能仍在解包中
+      this.events.onLog('本地未找到存档，等待解包完成后重试...')
+      await new Promise(r => setTimeout(r, 5000))
+      if (this.currentHost) return
+      hasLocal = await this.events.onCheckLocalSave(this.worldMeta.worldName)
+    }
+
     if (!hasLocal) {
       this.events.onLog('本地无缓存存档，等待其他人竞选主机')
       return

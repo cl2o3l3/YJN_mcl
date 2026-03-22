@@ -5,7 +5,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { SignalingClient } from '../services/signaling-client'
 import { HostElection, type ElectionState, type HostInfo } from '../services/host-election'
 import { WebRTCManager } from '../services/webrtc-manager'
@@ -82,6 +82,17 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   const isConnected = computed(() =>
     electionState.value === 'connected' || electionState.value === 'hosting'
   )
+
+  // 当 currentWorld 变化时，同步 worldMeta 到 election
+  watch(currentWorld, (world) => {
+    if (world && election) {
+      election.setWorldMeta({
+        worldName: world.worldName,
+        mcVersion: world.mcVersion,
+        modLoader: world.modLoader,
+      })
+    }
+  })
 
   // ========== 工具 ==========
 
@@ -195,13 +206,15 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         hostInfo.value = host
         if (election) myRole.value = election.getRole()
       },
-      onNeedTransferHost: async (worldName: string) => {
-        addLog(`正在打包存档 ${worldName}...`)
+      onNeedTransferHost: async (_suggestedName: string) => {
         if (!currentGameDir) throw new Error('未设置游戏目录')
-        const packed = await window.api.save.pack(
-          `${currentGameDir}/saves/${worldName}`
-        )
-        return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1 }
+        // 自动检测最近修改的存档（MC 刚退出，最后修改的就是正在玩的世界）
+        const saves = await window.api.save.list(currentGameDir)
+        if (saves.length === 0) throw new Error('未找到任何存档')
+        const latest = saves.sort((a: any, b: any) => b.lastModified - a.lastModified)[0]
+        addLog(`正在打包存档 ${latest.name}...`)
+        const packed = await window.api.save.pack(latest.path)
+        return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1, worldName: packed.worldName }
       },
       onNeedReceiveSave: async (archivePath: string, sha1: string, worldName: string) => {
         addLog(`正在解包存档 ${worldName}...`)
@@ -213,7 +226,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       onTransferProgress: (progress: TransferProgress) => {
         transferProgress.value = progress
       },
-      onTransferSaveToPeer: async (candidatePeerId: string, archivePath: string, sha1: string, _size: number) => {
+      onTransferSaveToPeer: async (candidatePeerId: string, archivePath: string, sha1: string, _size: number, worldName: string) => {
         const pc = webrtcManager?.getPeerConnection(candidatePeerId)
         if (!pc) {
           addLog('候选人无 WebRTC 连接，无法传输存档')
@@ -237,7 +250,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
               }
             }
           )
-          sender.send(pc, fileData, sha1).catch(() => resolve(false))
+          sender.send(pc, fileData, sha1, worldName).catch(() => resolve(false))
         })
       },
       onCheckLocalSave: async (worldName: string) => {
@@ -478,16 +491,22 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
     )
 
-    receiver.listen(pc).then(async ({ data }) => {
+    receiver.listen(pc).then(async ({ data, worldName: receivedWorldName }) => {
       addLog('✓ 存档接收完成，正在解包...')
       if (!currentGameDir) {
         addLog('⚠️ 未设置游戏目录，无法解包存档')
         return
       }
-      const worldName = currentWorld.value?.worldName || 'shared-world'
+      const worldName = receivedWorldName || currentWorld.value?.worldName || 'shared-world'
       try {
         await window.api.save.unpackBuffer(data, currentGameDir, worldName)
         addLog(`✓ 存档已解包到 saves/${worldName}`)
+        // 更新 worldMeta 以便 tryAutoElection 能找到这个存档
+        if (election) election.setWorldMeta({
+          worldName,
+          mcVersion: currentWorld.value?.mcVersion || '',
+          modLoader: currentWorld.value?.modLoader,
+        })
         addLog('请在 MC 中加载该存档并开启「对局域网开放」以成为新主机')
       } catch (e: any) {
         addLog(`解包失败: ${e.message}`)
