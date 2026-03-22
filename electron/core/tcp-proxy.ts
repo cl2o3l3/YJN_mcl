@@ -30,9 +30,16 @@ export class HostProxy extends EventEmitter {
     this.mcPort = mcLanPort
   }
 
-  /** 开始连接到 MC 本地服务器 */
+  /** 初始化（不立即连接 MC 服务器，等待首次数据到达时按需建立） */
   start(): void {
+    // 连接延迟到 writeToMc() 首次调用时建立
+    // 避免 MC 服务器因长时间无握手数据而关闭空闲连接
+  }
+
+  /** 按需建立 / 重建到 MC 服务器的 TCP 连接 */
+  private ensureConnection(): void {
     if (this.destroyed) return
+    if (this.socket && !this.socket.destroyed) return
 
     this.socket = net.createConnection({ host: '127.0.0.1', port: this.mcPort }, () => {
       this.emit('mc-connected', this.proxyId)
@@ -43,6 +50,7 @@ export class HostProxy extends EventEmitter {
     })
 
     this.socket.on('close', () => {
+      this.socket = null
       this.emit('mc-disconnected', this.proxyId)
     })
 
@@ -53,6 +61,8 @@ export class HostProxy extends EventEmitter {
 
   /** 从 WebRTC DataChannel 写入数据到 MC 服务器 */
   writeToMc(data: Buffer): void {
+    if (this.destroyed) return
+    this.ensureConnection()
     if (this.socket && !this.socket.destroyed) {
       this.socket.write(data)
     }

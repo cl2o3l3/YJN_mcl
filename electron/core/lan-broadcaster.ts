@@ -42,7 +42,7 @@ export function startLanBroadcast(id: string, port: number, motd: string): void 
   socket.bind(0, () => {
     try {
       socket.setMulticastTTL(1)
-      socket.setMulticastLoopback(true)
+      socket.setMulticastLoopback(false)
     } catch { /* 部分系统不支持 */ }
 
     // 立即发送一次

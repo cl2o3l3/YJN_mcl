@@ -490,6 +490,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       const port = games[0].port
       if (mcLanPort.value === port) return
 
+      // 如果检测到的端口与客户端自身代理端口相同，说明是自己的假 LAN 广播，忽略
+      if (localPort.value > 0 && port === localPort.value) return
+
       mcLanPort.value = port
       addLog(`检测到 MC LAN 端口: ${port}`)
 

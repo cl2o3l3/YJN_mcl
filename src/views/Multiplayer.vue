@@ -235,7 +235,11 @@ async function handleSWLaunch() {
     launch.isRunning = true
     const rawAccount = JSON.parse(JSON.stringify(toRaw(auth.selectedAccount)))
     await window.api.launch.start(profile.id, rawAccount)
-    sw.addLog('✓ 游戏已启动，请在 MC 中打开「对局域网开放」')
+    if (sw.myRole === 'host' || !sw.myRole) {
+      sw.addLog('✓ 游戏已启动，请在 MC 中打开「对局域网开放」')
+    } else {
+      sw.addLog('✓ 游戏已启动，请在 MC 中打开「多人游戏」连接服务器')
+    }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     launch.error = msg
