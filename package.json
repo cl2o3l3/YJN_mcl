@@ -1,7 +1,7 @@
 {
   "name": "yjn-launcher",
   "private": true,
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "YJN - Minecraft Java Edition Launcher",
   "author": "YJN",
   "type": "module",
