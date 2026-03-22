@@ -176,7 +176,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   function createElectionEvents() {
     return {
       onStateChange: (state: ElectionState) => { electionState.value = state },
-      onHostChange: (host: HostInfo | null) => { hostInfo.value = host },
+      onHostChange: (host: HostInfo | null) => {
+        hostInfo.value = host
+        if (election) myRole.value = election.getRole()
+      },
       onNeedTransferHost: async (worldName: string) => {
         addLog(`正在打包存档 ${worldName}...`)
         if (!currentGameDir) throw new Error('未设置游戏目录')
@@ -386,6 +389,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     // 监听 host-changed: 当新主机出现时，非主机 peer 自动发起 WebRTC 连接
     const onHostChangedP2P = (msg: any) => {
       if (msg.hostId && msg.hostId !== signaling!.peerId && webrtcManager) {
+        // 同步角色（joinWorld 时可能无主机导致 myRole 为 null）
+        if (!myRole.value && election) myRole.value = election.getRole()
         addLog('正在与主机建立 P2P 连接...')
         webrtcManager.connectToPeer(msg.hostId, msg.hostName || '主机', true)
       }
