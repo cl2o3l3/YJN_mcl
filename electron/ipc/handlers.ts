@@ -33,7 +33,7 @@ import {
   sendServerCommand, getServerStatus,
   type ServerCoreConfig, type McServerConfig
 } from '../core/mc-server-manager'
-import { packSave, unpackSave, getSaveInfo, listSaves } from '../core/save-sync'
+import { packSave, unpackSave, getSaveInfo, listSaves, readArchive, unpackSaveFromBuffer } from '../core/save-sync'
 import type {
   DownloadProgress, MinecraftAccount, AuthProgressEvent, YggdrasilServerInfo,
   ResourceSearchParams, ResourceFile, ResourceType, ResourcePlatform, ResourceVersion,
@@ -479,6 +479,14 @@ export function registerIpcHandlers() {
 
   ipcMain.handle('save:list', safe(async (_, gameDir: string) => {
     return listSaves(gameDir)
+  }))
+
+  ipcMain.handle('save:readArchive', safe(async (_, archivePath: string) => {
+    return readArchive(archivePath)
+  }))
+
+  ipcMain.handle('save:unpackBuffer', safe(async (_, data: Buffer, gameDir: string, worldName: string) => {
+    return unpackSaveFromBuffer(data, gameDir, worldName)
   }))
 
   // ========== 自动重连提示 (Plan C) ==========

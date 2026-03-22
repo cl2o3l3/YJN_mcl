@@ -9,6 +9,8 @@ import { SignalingClient } from './signaling-client'
 
 export interface PeerConnection {
   tier: ConnectionTier
+  /** 底层 RTCPeerConnection（仅 WebRTC 连接可用，relay 为 null） */
+  pc: RTCPeerConnection | null
   send(data: Uint8Array): void
   onData(cb: (data: Uint8Array) => void): void
   close(): void
@@ -274,6 +276,7 @@ function wrapWebRTC(result: WebRTCResult, tier: ConnectionTier): PeerConnection 
 
   return {
     tier,
+    pc,
     send(data: Uint8Array) {
       if (dc.readyState === 'open') {
         dc.send(new Uint8Array(data) as unknown as ArrayBufferView<ArrayBuffer>)
@@ -327,6 +330,7 @@ function createRelayConnection(peerId: string, signaling: SignalingClient): Peer
 
   return {
     tier: 'relay',
+    pc: null,
     send(data: Uint8Array) {
       signaling.sendRelayData(peerId, uint8ToBase64(data))
     },
@@ -400,6 +404,7 @@ function connectStandaloneRelay(
           clearTimeout(pairedTimer)
           resolve({
             tier: 'relay',
+            pc: null,
             send(data: Uint8Array) {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'data', data: uint8ToBase64(data) }))

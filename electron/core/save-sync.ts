@@ -316,3 +316,29 @@ export async function cleanupTempFiles(gameDir: string): Promise<void> {
     await fsp.rm(tmpDir, { recursive: true, force: true })
   }
 }
+
+/** 读取打包好的存档文件为 Buffer（用于 WebRTC 传输） */
+export async function readArchive(archivePath: string): Promise<Buffer> {
+  if (!fs.existsSync(archivePath)) {
+    throw new Error(`存档文件不存在: ${archivePath}`)
+  }
+  return fsp.readFile(archivePath)
+}
+
+/** 从内存 Buffer 接收并解包存档（WebRTC 接收端用） */
+export async function unpackSaveFromBuffer(
+  data: Buffer,
+  gameDir: string,
+  worldName: string
+): Promise<void> {
+  const tmpDir = path.join(gameDir, '.save-sync-tmp')
+  await fsp.mkdir(tmpDir, { recursive: true })
+  const tmpPath = path.join(tmpDir, `${worldName}-${Date.now()}.tar.gz`)
+  await fsp.writeFile(tmpPath, data)
+
+  const targetDir = path.join(gameDir, 'saves', worldName)
+  await unpackSave(tmpPath, targetDir)
+
+  // 清理临时文件
+  await fsp.unlink(tmpPath).catch(() => {})
+}

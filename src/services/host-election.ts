@@ -50,6 +50,11 @@ export interface ElectionEvents {
    * 需要接收并解包存档 (即将成为新主机)
    */
   onNeedReceiveSave: (archivePath: string, sha1: string, worldName: string) => Promise<void>
+  /**
+   * 将打包好的存档通过 WebRTC 传输给候选人
+   * 返回是否成功
+   */
+  onTransferSaveToPeer: (candidatePeerId: string, archivePath: string, sha1: string, size: number) => Promise<boolean>
   /** 存档传输进度 */
   onTransferProgress: (progress: TransferProgress) => void
   /** 检查本地是否有缓存存档 */
@@ -249,7 +254,28 @@ export class HostElection {
       this.events.onLog('正在打包存档...')
 
       // 打包存档 (此时用户的 MC 应已退出或存档已落盘)
-      await this.events.onNeedTransferHost(this.worldMeta.worldName)
+      const packed = await this.events.onNeedTransferHost(this.worldMeta.worldName)
+
+      // 尝试将存档传输给候选人
+      const candidates = this.roomPeers.filter(p => p.id !== this.signaling.peerId)
+      if (candidates.length > 0) {
+        const candidate = candidates[0]
+        this.events.onLog(`正在向 ${candidate.name} 传输存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
+        try {
+          const ok = await this.events.onTransferSaveToPeer(
+            candidate.id, packed.archivePath, packed.sha1, packed.size
+          )
+          if (ok) {
+            this.events.onLog('✓ 存档已传输给候选人')
+          } else {
+            this.events.onLog('存档传输失败，候选人可能需要手动加载存档')
+          }
+        } catch (e: any) {
+          this.events.onLog(`存档传输异常: ${e.message}`)
+        }
+      } else {
+        this.events.onLog('无候选人，跳过存档传输')
+      }
 
       this.signaling.unregisterHost()
       this.events.onLog('已移交主机权限')

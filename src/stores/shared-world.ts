@@ -9,7 +9,7 @@ import { ref, computed } from 'vue'
 import { SignalingClient } from '../services/signaling-client'
 import { HostElection, type ElectionState, type HostInfo } from '../services/host-election'
 import { WebRTCManager } from '../services/webrtc-manager'
-import type { TransferProgress } from '../services/save-transfer'
+import { SaveSender, SaveReceiver, type TransferProgress } from '../services/save-transfer'
 import type { ModLoaderInfo, P2PPeer } from '../types'
 import { useSettingsStore } from './settings'
 
@@ -213,6 +213,33 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       onTransferProgress: (progress: TransferProgress) => {
         transferProgress.value = progress
       },
+      onTransferSaveToPeer: async (candidatePeerId: string, archivePath: string, sha1: string, _size: number) => {
+        const pc = webrtcManager?.getPeerConnection(candidatePeerId)
+        if (!pc) {
+          addLog('候选人无 WebRTC 连接，无法传输存档')
+          return false
+        }
+
+        // 读取打包好的存档到内存
+        const fileData = await window.api.save.readArchive(archivePath)
+
+        return new Promise<boolean>((resolve) => {
+          const sender = new SaveSender(
+            (progress) => { transferProgress.value = progress },
+            (success, err) => {
+              transferProgress.value = null
+              if (success) {
+                addLog('✓ 存档通过 WebRTC 传输完成')
+                resolve(true)
+              } else {
+                addLog(`存档传输失败: ${err}`)
+                resolve(false)
+              }
+            }
+          )
+          sender.send(pc, fileData, sha1).catch(() => resolve(false))
+        })
+      },
       onCheckLocalSave: async (worldName: string) => {
         if (!currentGameDir) return false
         try {
@@ -293,6 +320,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         const result = await window.api.p2p.startClientProxy(peerId)
         localPort.value = result.port
         addLog(`本地代理端口: ${result.port}，等待房主开启 MC 局域网...`)
+
+        // 监听来自主机的存档传输 (主机迁移时触发)
+        const pc = webrtcManager?.getPeerConnection(peerId)
+        if (pc) {
+          setupSaveReceiver(pc)
+        }
       }
 
       setupDataBridge(peerId)
@@ -430,6 +463,41 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
     })
     cleanupFns.push(unsub)
+  }
+
+  /**
+   * 客户端: 监听来自主机的存档传输
+   * 当主机迁移离开时，会通过 WebRTC DataChannel 发送存档
+   */
+  function setupSaveReceiver(pc: RTCPeerConnection) {
+    const receiver = new SaveReceiver(
+      (progress) => { transferProgress.value = progress },
+      (success, err) => {
+        transferProgress.value = null
+        if (!success) addLog(`存档接收失败: ${err}`)
+      }
+    )
+
+    receiver.listen(pc).then(async ({ data }) => {
+      addLog('✓ 存档接收完成，正在解包...')
+      if (!currentGameDir) {
+        addLog('⚠️ 未设置游戏目录，无法解包存档')
+        return
+      }
+      const worldName = currentWorld.value?.worldName || 'shared-world'
+      try {
+        await window.api.save.unpackBuffer(data, currentGameDir, worldName)
+        addLog(`✓ 存档已解包到 saves/${worldName}`)
+        addLog('请在 MC 中加载该存档并开启「对局域网开放」以成为新主机')
+      } catch (e: any) {
+        addLog(`解包失败: ${e.message}`)
+      }
+    }).catch((err) => {
+      // 连接关闭或传输取消时可能触发，非致命
+      if (electionState.value !== 'idle') {
+        addLog(`存档监听中断: ${err.message}`)
+      }
+    })
   }
 
   /**

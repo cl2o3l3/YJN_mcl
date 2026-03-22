@@ -163,6 +163,11 @@ export class WebRTCManager {
     return this.peers.get(peerId)?.tier
   }
 
+  /** 获取某 peer 的底层 RTCPeerConnection（仅 WebRTC 连接可用） */
+  getPeerConnection(peerId: string): RTCPeerConnection | null {
+    return this.peers.get(peerId)?.connection?.pc ?? null
+  }
+
   private emitPeerUpdate(): void {
     this.emit('peers-updated', this.getPeers())
   }
