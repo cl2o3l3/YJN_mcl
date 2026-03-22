@@ -7,7 +7,7 @@ import { useModloaderStore } from '../stores/modloader'
 import { useProfilesStore } from '../stores/profiles'
 import { useTasksStore } from '../stores/tasks'
 import { useNotificationsStore } from '../stores/notifications'
-import type { GCType, ModLoaderType, JvmArgs, DownloadProgress } from '../types'
+import type { GCType, ModLoaderType, JvmArgs, DownloadProgress, VersionIsolationMode } from '../types'
 import { GC_PRESETS } from '../types'
 
 const router = useRouter()
@@ -24,6 +24,7 @@ const instName = ref('')
 const loaderType = ref<ModLoaderType | ''>('')
 const loaderVersion = ref('')
 const gameDir = ref('')
+const versionIsolation = ref<VersionIsolationMode>('inherit')
 const javaPath = ref('')
 const maxMemory = ref(4096)
 const minMemory = ref(1024)
@@ -32,10 +33,26 @@ const gcArgsText = ref(GC_PRESETS.G1GC.join('\n'))
 const extraArgs = ref('-Dlog4j2.formatMsgNoLookups=true')
 const windowWidth = ref(1280)
 const windowHeight = ref(720)
+const iconPath = ref('')
+const tags = ref<string[]>([])
+const newTag = ref('')
 const totalMemory = ref(0)
 const javas = ref<{ path: string; version: string; majorVersion: number }[]>([])
 const scanningJava = ref(false)
 const showAdvanced = ref(false)
+
+const effectiveIsolationEnabled = computed(() => {
+  if (versionIsolation.value === 'enabled') return true
+  if (versionIsolation.value === 'disabled') return false
+  return settings.defaultVersionIsolation
+})
+
+const effectiveGameDirPreview = computed(() => {
+  if (!gameDir.value) return ''
+  if (!effectiveIsolationEnabled.value) return gameDir.value
+  const safeName = (instName.value || 'instance').replace(/[<>:"/\\|?*]/g, '-').trim() || 'instance'
+  return `${gameDir.value}${gameDir.value.endsWith('\\') ? '' : '\\'}instances\\${safeName}-<自动ID>`
+})
 
 // 安装状态
 const installing = ref(false)
@@ -130,6 +147,12 @@ function toggleExpand(versionId: string) {
   resetForm()
   instName.value = `Minecraft ${versionId}`
   gameDir.value = settings.defaultGameDir || ''
+  versionIsolation.value = 'inherit'
+  maxMemory.value = settings.defaultMaxMemory
+  minMemory.value = settings.defaultMinMemory
+  gcType.value = settings.defaultJvmArgs.gcType
+  gcArgsText.value = settings.defaultJvmArgs.gcArgs.join('\n')
+  extraArgs.value = settings.defaultJvmArgs.extraArgs.join(' ')
   if (!gameDir.value) {
     window.api.system.defaultGameDir().then(d => { gameDir.value = d })
   }
@@ -140,14 +163,18 @@ function resetForm() {
   instName.value = ''
   loaderType.value = ''
   loaderVersion.value = ''
+  versionIsolation.value = 'inherit'
   javaPath.value = ''
-  maxMemory.value = 4096
-  minMemory.value = 1024
-  gcType.value = 'G1GC'
-  gcArgsText.value = GC_PRESETS.G1GC.join('\n')
-  extraArgs.value = '-Dlog4j2.formatMsgNoLookups=true'
+  maxMemory.value = settings.defaultMaxMemory
+  minMemory.value = settings.defaultMinMemory
+  gcType.value = settings.defaultJvmArgs.gcType
+  gcArgsText.value = settings.defaultJvmArgs.gcArgs.join('\n')
+  extraArgs.value = settings.defaultJvmArgs.extraArgs.join(' ')
   windowWidth.value = 1280
   windowHeight.value = 720
+  iconPath.value = ''
+  tags.value = []
+  newTag.value = ''
   showAdvanced.value = false
   installError.value = ''
   installDone.value = false
@@ -157,8 +184,31 @@ function resetForm() {
 
 async function scanJava() {
   scanningJava.value = true
-  try { javas.value = await window.api.java.scan() }
+  try {
+    javas.value = await window.api.java.scan()
+    if (javaPath.value && !javas.value.some(j => j.path === javaPath.value)) {
+      const info = await window.api.java.validate(javaPath.value)
+      if (info) javas.value.unshift({ path: info.path, version: info.version, majorVersion: info.majorVersion })
+    }
+  }
   finally { scanningJava.value = false }
+}
+
+async function selectIcon() {
+  const file = await window.api.dialog.selectFile([{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }])
+  if (file) iconPath.value = file
+}
+
+function clearIcon() { iconPath.value = '' }
+
+function addTag() {
+  const tag = newTag.value.trim()
+  if (tag && !tags.value.includes(tag)) tags.value.push(tag)
+  newTag.value = ''
+}
+
+function removeTag(tag: string) {
+  tags.value = tags.value.filter(t => t !== tag)
 }
 
 async function selectGameDir() {
@@ -170,7 +220,12 @@ async function selectJava() {
   const file = await window.api.dialog.selectFile([{ name: 'Java', extensions: ['exe'] }])
   if (file) {
     const info = await window.api.java.validate(file)
-    if (info) javaPath.value = file
+    if (info) {
+      if (!javas.value.some(j => j.path === info.path)) {
+        javas.value.unshift({ path: info.path, version: info.version, majorVersion: info.majorVersion })
+      }
+      javaPath.value = info.path
+    }
   }
 }
 
@@ -205,10 +260,18 @@ async function startInstall() {
       name: instName.value,
       versionId,
       gameDir: gameDir.value,
+      baseGameDir: gameDir.value,
+      versionIsolation: versionIsolation.value,
       javaPath: javaPath.value,
       jvmArgs,
-      modLoader
+      modLoader,
+      windowWidth: windowWidth.value,
+      windowHeight: windowHeight.value,
+      iconPath: iconPath.value || undefined,
+      tags: tags.value.length ? tags.value : undefined,
     })
+
+    const targetGameDir = profile.gameDir
 
     let targetVersionId = versionId
     if (modLoader) {
@@ -216,7 +279,7 @@ async function startInstall() {
       try {
         targetVersionId = await modloaderStore.install(
           modLoader.type, versionId, modLoader.version,
-          gameDir.value, javaPath.value || undefined
+          targetGameDir, javaPath.value || undefined
         )
       } finally { installingLoader.value = false }
     }
@@ -225,12 +288,12 @@ async function startInstall() {
       downloadProgress.value = p
       useTasksStore().updateProgress(_vTaskId, { completed: p.completed, total: p.total, speed: p.speed })
     })
-    await window.api.download.installVersion(targetVersionId, gameDir.value)
+    await window.api.download.installVersion(targetVersionId, targetGameDir)
     unsubProgress?.()
     unsubProgress = null
     downloadProgress.value = null
 
-    await store.fetchLocalVersions(gameDir.value)
+    await store.fetchLocalVersions(targetGameDir)
     profiles.selectedId = profile.id
     installDone.value = true
     useTasksStore().completeTask(_vTaskId)
@@ -311,6 +374,18 @@ function goHome() {
             <template v-else>
               <!-- 基本配置 -->
               <div class="panel-section">
+                <div class="form-group icon-group">
+                  <label>实例图标</label>
+                  <div class="icon-row">
+                    <div class="icon-preview">
+                      <img v-if="iconPath" :src="'mc-icon:///' + encodeURIComponent(iconPath).replace(/%5C/g, '/').replace(/%3A/g, ':')" alt="" />
+                      <span v-else class="icon-placeholder">🖼️</span>
+                    </div>
+                    <button class="btn-secondary" @click.stop="selectIcon" :disabled="installing">选择图标</button>
+                    <button v-if="iconPath" class="btn-secondary" @click.stop="clearIcon" :disabled="installing">清除</button>
+                  </div>
+                </div>
+
                 <div class="form-group">
                   <label>实例名称</label>
                   <input v-model="instName" :placeholder="`Minecraft ${v.id}`" :disabled="installing" />
@@ -343,11 +418,22 @@ function goHome() {
                 </div>
 
                 <div class="form-group">
-                  <label>游戏目录</label>
+                  <label>游戏目录根目录</label>
                   <div class="input-row">
                     <input v-model="gameDir" readonly class="flex-input" />
                     <button class="btn-secondary" @click.stop="selectGameDir" :disabled="installing">浏览...</button>
                   </div>
+                </div>
+
+                <div class="form-group">
+                  <label>版本隔离</label>
+                  <select v-model="versionIsolation" :disabled="installing">
+                    <option value="inherit">跟随全局默认</option>
+                    <option value="enabled">开启</option>
+                    <option value="disabled">关闭</option>
+                  </select>
+                  <div class="text-hint">当前生效：{{ effectiveIsolationEnabled ? '开启' : '关闭' }}</div>
+                  <div class="text-hint">实例实际目录：{{ effectiveGameDirPreview || '未选择目录' }}</div>
                 </div>
               </div>
 
@@ -360,10 +446,10 @@ function goHome() {
 
                 <div v-show="showAdvanced" class="advanced-body">
                   <div class="form-group">
-                    <label>Java 路径 <span class="text-hint">(留空自动检测)</span></label>
+                    <label>启动 Java <span class="text-hint">(当前实例专用，留空则用全局默认/自动检测)</span></label>
                     <div class="input-row">
                       <select v-model="javaPath" class="flex-input" :disabled="installing">
-                        <option value="">自动检测</option>
+                        <option value="">跟随全局默认 / 自动检测</option>
                         <option v-for="j in javas" :key="j.path" :value="j.path">
                           Java {{ j.majorVersion }} ({{ j.version }}) - {{ j.path }}
                         </option>
@@ -390,9 +476,11 @@ function goHome() {
                   <div class="form-group">
                     <label>GC 类型</label>
                     <select v-model="gcType" @change="onGcChange" :disabled="installing">
-                      <option value="G1GC">G1GC (推荐)</option>
-                      <option value="ZGC">ZGC (大内存)</option>
+                      <option value="G1GC">G1GC (默认)</option>
+                      <option value="AikarG1">Aikar's Flags (服务器/模组推荐)</option>
+                      <option value="ZGC">ZGC (大内存低延迟, Java 17+)</option>
                       <option value="ShenandoahGC">Shenandoah (低延迟)</option>
+                      <option value="GraalVMG1">GraalVM G1 (需 GraalVM JDK)</option>
                       <option value="ParallelGC">Parallel GC</option>
                       <option value="SerialGC">Serial GC</option>
                       <option value="custom">自定义</option>
@@ -417,6 +505,22 @@ function goHome() {
                     <div class="form-group">
                       <label>窗口高度</label>
                       <input type="number" v-model.number="windowHeight" min="600" :disabled="installing" />
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label>标签 <span class="text-hint">（可用于分组筛选）</span></label>
+                    <div class="tag-editor">
+                      <div class="tag-list" v-if="tags.length">
+                        <span v-for="t in tags" :key="t" class="tag-badge">
+                          {{ t }}
+                          <button class="tag-x" @click.stop="removeTag(t)">&times;</button>
+                        </span>
+                      </div>
+                      <div class="tag-input-row">
+                        <input v-model="newTag" placeholder="输入标签后回车" @keyup.enter="addTag" :disabled="installing" />
+                        <button class="btn-secondary" @click.stop="addTag" :disabled="installing || !newTag.trim()">添加</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -533,6 +637,28 @@ function goHome() {
 .section-label { font-size: 13px; font-weight: 500; }
 .toggle-icon { color: var(--text-muted); font-size: 12px; }
 .advanced-body { margin-top: 10px; }
+
+.icon-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.icon-preview {
+  width: 52px; height: 52px; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.icon-preview img { width: 100%; height: 100%; object-fit: cover; }
+.icon-placeholder { font-size: 22px; opacity: 0.7; }
+
+.tag-editor { display: flex; flex-direction: column; gap: 8px; }
+.tag-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  background: var(--bg-secondary); border: 1px solid var(--border); font-size: 12px;
+}
+.tag-x {
+  border: none; background: transparent; color: var(--text-muted);
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+}
+.tag-input-row { display: flex; gap: 8px; }
 
 .mono-input {
   background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);

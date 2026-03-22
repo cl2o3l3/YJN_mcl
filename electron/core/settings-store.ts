@@ -13,6 +13,7 @@ export function loadSettings(): LauncherSettings {
     mirrorSource: store.get('mirrorSource'),
     defaultJvmArgs: store.get('defaultJvmArgs'),
     defaultGameDir: store.get('defaultGameDir'),
+    defaultVersionIsolation: store.get('defaultVersionIsolation'),
     defaultJavaPath: store.get('defaultJavaPath'),
     manualJavaPaths: store.get('manualJavaPaths'),
     theme: store.get('theme'),

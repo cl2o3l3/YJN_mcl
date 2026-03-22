@@ -118,7 +118,7 @@ async function handleAddGameDir() {
 }
 
 function profileCountForDir(dir: string): number {
-  return profiles.profiles.filter(p => p.gameDir === dir).length
+  return profiles.profiles.filter(p => (p.baseGameDir || p.gameDir) === dir).length
 }
 
 const themeOptions = [
@@ -418,13 +418,26 @@ function formatBytes(bytes: number): string {
       <div class="java-panel-trigger" @click="toggleGameDirPanel">
         <div class="trigger-info">
           <h3>游戏目录管理</h3>
-          <p class="text-hint">管理多个游戏目录，自动扫描已有实例</p>
+          <p class="text-hint">管理多个游戏目录，并设置新实例默认是否启用版本隔离</p>
         </div>
         <span class="trigger-arrow" :class="{ open: gameDirExpanded }">▾</span>
       </div>
 
       <Transition name="jdrop">
         <div v-if="gameDirExpanded" class="java-cascade">
+          <div class="gamedir-row isolation-default-row">
+            <div class="gamedir-info">
+              <span class="gamedir-path">默认版本隔离</span>
+              <span class="gamedir-meta">新实例默认使用独立目录（可在实例编辑中覆盖）</span>
+            </div>
+            <div class="gamedir-actions">
+              <label class="switch-inline">
+                <input type="checkbox" v-model="settings.defaultVersionIsolation" @change="settings.persist()" />
+                <span>{{ settings.defaultVersionIsolation ? '开启' : '关闭' }}</span>
+              </label>
+            </div>
+          </div>
+
           <!-- 目录列表 -->
           <div class="gamedir-list">
             <div

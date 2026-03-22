@@ -13,6 +13,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const backgroundImage = ref<string | undefined>(undefined)
   const backgroundOpacity = ref(0.3)
   const defaultGameDir = ref('')
+  const defaultVersionIsolation = ref(false)
   const gameDirs = ref<string[]>([])
   const defaultJavaPath = ref('')
   const manualJavaPaths = ref<string[]>([])
@@ -46,6 +47,7 @@ export const useSettingsStore = defineStore('settings', () => {
       manualJavaPaths: manualJavaPaths.value,
       defaultJvmArgs: defaultJvmArgs.value,
       maxConcurrentDownloads: downloadConcurrency.value,
+      defaultVersionIsolation: defaultVersionIsolation.value,
       defaultMinMemory: defaultMinMemory.value,
       defaultMaxMemory: defaultMaxMemory.value,
       signalingServer: signalingServer.value,
@@ -70,6 +72,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (saved.backgroundImage !== undefined) backgroundImage.value = saved.backgroundImage
     if (saved.backgroundOpacity !== undefined) backgroundOpacity.value = saved.backgroundOpacity
     if (saved.defaultGameDir) defaultGameDir.value = saved.defaultGameDir
+    if (saved.defaultVersionIsolation !== undefined) defaultVersionIsolation.value = saved.defaultVersionIsolation
     if (saved.gameDirs?.length) gameDirs.value = saved.gameDirs
     if (saved.defaultJavaPath) defaultJavaPath.value = saved.defaultJavaPath
     if (saved.manualJavaPaths?.length) manualJavaPaths.value = saved.manualJavaPaths
@@ -315,6 +318,7 @@ export const useSettingsStore = defineStore('settings', () => {
   return {
     mirrorSource, theme, accentColor, bgColor, backgroundImage, backgroundOpacity,
     defaultGameDir, gameDirs, defaultJavaPath,
+    defaultVersionIsolation,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,

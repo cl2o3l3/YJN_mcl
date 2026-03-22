@@ -15,10 +15,14 @@ export interface ModLoaderInfo {
   version: string
 }
 
+export type VersionIsolationMode = 'inherit' | 'enabled' | 'disabled'
+
 export interface GameProfile {
   id: string
   name: string
   gameDir: string
+  baseGameDir?: string
+  versionIsolation?: VersionIsolationMode
   versionId: string
   modLoader?: ModLoaderInfo
   javaPath: string
@@ -214,6 +218,7 @@ export interface LauncherSettings {
   mirrorSource: MirrorSource
   defaultJvmArgs: JvmArgs
   defaultGameDir: string
+  defaultVersionIsolation: boolean
   defaultJavaPath: string
   manualJavaPaths: string[]  // 手动添加的Java路径
   gameDirs: string[]         // 多游戏目录
@@ -534,6 +539,7 @@ export function getDefaultSettings(): LauncherSettings {
     mirrorSource: 'bmclapi',
     defaultJvmArgs: getDefaultJvmArgs(),
     defaultGameDir: '',    // 运行时根据平台计算
+    defaultVersionIsolation: false,
     defaultJavaPath: '',   // 运行时自动检测
     manualJavaPaths: [],
     gameDirs: [],

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { GameProfile, JvmArgs, ModLoaderInfo } from '../types'
+import type { GameProfile, JvmArgs, ModLoaderInfo, VersionIsolationMode } from '../types'
 
 export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<GameProfile[]>([])
@@ -30,9 +30,15 @@ export const useProfilesStore = defineStore('profiles', () => {
     name: string
     versionId: string
     gameDir?: string
+    baseGameDir?: string
+    versionIsolation?: VersionIsolationMode
     javaPath?: string
     jvmArgs?: JvmArgs
     modLoader?: ModLoaderInfo
+    windowWidth?: number
+    windowHeight?: number
+    iconPath?: string
+    tags?: string[]
   }) {
     const profile = await window.api.profiles.create(opts)
     profiles.value.push(profile)
