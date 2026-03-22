@@ -310,7 +310,8 @@ async function onPickInstance(profile: GameProfile) {
   if (requiredDeps.length > 0) {
     pendingDepInstall.value = { version, file, gameDir: selectedDir }
     try {
-      deps.value = await window.api.resources.dependencies(version, expandedProject.value.platform)
+      const plainVersion = JSON.parse(JSON.stringify(version))
+      deps.value = await window.api.resources.dependencies(plainVersion, expandedProject.value.platform)
     } catch {
       deps.value = { required: [], optional: [] }
     }

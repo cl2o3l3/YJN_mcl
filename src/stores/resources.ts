@@ -90,7 +90,9 @@ export const useResourcesStore = defineStore('resources', () => {
   ) {
     installingFiles.value.add(file.filename)
     try {
-      await window.api.resources.install(file, type, gameDir, meta)
+      const plainFile = JSON.parse(JSON.stringify(file))
+      const plainMeta = JSON.parse(JSON.stringify(meta))
+      await window.api.resources.install(plainFile, type, gameDir, plainMeta)
     } finally {
       installingFiles.value.delete(file.filename)
     }
