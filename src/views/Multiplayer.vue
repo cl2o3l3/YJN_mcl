@@ -149,13 +149,39 @@ function copySWCode() {
 
 watch(swSelectedProfileId, (profileId) => {
   const profile = profiles.profiles.find(p => p.id === profileId)
-  if (profile) sw.setGameDir(profile.gameDir)
+  if (profile) {
+    sw.setGameDir(profile.gameDir)
+    // 主机选择实例时更新版本信息，让客户端可以看到
+    if (sw.isHost) {
+      sw.currentWorld = {
+        roomCode: sw.roomCode,
+        worldName: profile.name,
+        mcVersion: profile.versionId,
+        modLoader: profile.modLoader || undefined,
+        createdAt: sw.currentWorld?.createdAt || Date.now(),
+      }
+    }
+  }
 })
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function isMyself(peerId: string): boolean {
+  return peerId === sw.myPeerId
+}
+
+function getMemberP2PState(peerId: string): string {
+  const peer = sw.peers.find(p => p.id === peerId)
+  return peer?.state || 'disconnected'
+}
+
+function getMemberRtt(peerId: string): number {
+  const peer = sw.peers.find(p => p.id === peerId)
+  return peer?.rtt || 0
 }
 
 // 回到主菜单
@@ -886,17 +912,21 @@ function rttClass(rtt: number): string {
             </div>
           </div>
 
-          <!-- 主机信息 -->
-          <div v-if="sw.hostInfo" class="card mt">
-            <h3>当前主机</h3>
-            <div class="sw-host-row">
-              <span class="sw-host-name">👑 {{ sw.hostInfo.peerName }}</span>
-              <span class="text-muted text-xs">{{ sw.hostInfo.mcPort ? 'MC:' + sw.hostInfo.mcPort : '' }}</span>
+          <!-- 玩家列表 -->
+          <div class="card mt">
+            <h3>玩家 ({{ sw.roomMembers.length }})</h3>
+            <div class="player-grid">
+              <div v-for="m in sw.roomMembers" :key="m.id" class="player-card" :class="{ self: m.id === sw.roomMembers[0]?.id && sw.isHost || isMyself(m.id) }">
+                <img class="player-avatar" :src="isMyself(m.id) && auth.selectedAccount ? getAvatar(auth.selectedAccount) : getPeerAvatar(m.name)" />
+                <span class="player-name">{{ m.name }}</span>
+                <span class="player-tag" v-if="sw.hostInfo && m.id === sw.hostInfo.peerId">👑</span>
+                <span class="player-tag" v-if="isMyself(m.id)">你</span>
+                <span class="player-meta" v-if="!isMyself(m.id)">
+                  <span class="state-dot" :class="'state-' + getMemberP2PState(m.id)" />
+                  <span v-if="getMemberRtt(m.id) > 0" class="rtt-badge" :class="rttClass(getMemberRtt(m.id))">{{ getMemberRtt(m.id) }}ms</span>
+                </span>
+              </div>
             </div>
-          </div>
-          <div v-else class="card mt">
-            <h3>主机</h3>
-            <p class="text-muted">等待有人在 MC 中开启局域网...</p>
           </div>
 
           <!-- 选举状态 -->

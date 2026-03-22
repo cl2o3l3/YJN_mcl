@@ -67,6 +67,7 @@ export class HostElection {
   private worldMeta: WorldMeta | null = null
   private currentHost: HostInfo | null = null
   private myRole: 'host' | 'client' | null = null
+  private roomPeers: { id: string, name: string }[] = []
 
   // 信令监听器清理
   private cleanups: (() => void)[] = []
@@ -80,6 +81,7 @@ export class HostElection {
   getHost(): HostInfo | null { return this.currentHost }
   getRole(): 'host' | 'client' | null { return this.myRole }
   getWorldMeta(): WorldMeta | null { return this.worldMeta }
+  getRoomPeers(): { id: string, name: string }[] { return this.roomPeers }
 
   setWorldMeta(meta: WorldMeta): void { this.worldMeta = meta }
 
@@ -111,6 +113,10 @@ export class HostElection {
     const roomJoined = await roomJoinedPromise as any
     if (roomJoined.roomId) {
       this.signaling.setRoomId(roomJoined.roomId)
+    }
+    // 保存已有成员列表
+    if (Array.isArray(roomJoined.peers)) {
+      this.roomPeers = roomJoined.peers.map((p: any) => ({ id: String(p.id), name: String(p.name || '') }))
     }
 
     // 查询当前主机

@@ -68,6 +68,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   const mcLanPort = ref(0)
   const localPort = ref(0)
 
+  // 房间成员 (信令层级，含所有已加入玩家)
+  const roomMembers = ref<{ id: string, name: string }[]>([])
+  const myPeerId = ref('')
+
   // 当前游戏目录 (用于写 reconnect hint)
   let currentGameDir = ''
 
@@ -100,12 +104,15 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     try {
       signaling = new SignalingClient()
       await signaling.connect(settings.signalingServer)
+      myPeerId.value = signaling.peerId
       addLog('已连接到信令服务器')
 
       election = new HostElection(signaling, createElectionEvents())
 
       const code = await election.createWorld(config.playerName)
       roomCode.value = code
+      // 房主自己就是第一个成员
+      roomMembers.value = [{ id: signaling!.peerId, name: config.playerName }]
 
       startP2PPipeline()
 
@@ -130,6 +137,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     try {
       signaling = new SignalingClient()
       await signaling.connect(settings.signalingServer)
+      myPeerId.value = signaling.peerId
       addLog('已连接到信令服务器')
 
       election = new HostElection(signaling, createElectionEvents())
@@ -138,6 +146,13 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       await election.joinWorld(config.roomCode, config.playerName)
       myRole.value = election.getRole()
+
+      // 从 election 获取已有成员列表 (room-joined.peers) + 自己
+      const existingPeers = election.getRoomPeers?.() || []
+      roomMembers.value = [
+        ...existingPeers,
+        { id: signaling!.peerId, name: config.playerName },
+      ]
 
       startP2PPipeline()
 
@@ -324,13 +339,19 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
     // 监听信令 peer 事件
     const onPeerJoined = (msg: any) => {
-      addLog(`${msg.peerName || '玩家'} 加入了房间`)
+      const name = msg.peerName || '玩家'
+      addLog(`${name} 加入了房间`)
+      // 更新房间成员列表
+      if (!roomMembers.value.some(m => m.id === msg.peerId)) {
+        roomMembers.value = [...roomMembers.value, { id: msg.peerId, name }]
+      }
     }
     signaling.on('peer-joined', onPeerJoined)
     cleanupFns.push(() => signaling?.off('peer-joined', onPeerJoined))
 
     const onPeerLeft = (msg: any) => {
       addLog('玩家离开')
+      roomMembers.value = roomMembers.value.filter(m => m.id !== msg.peerId)
       webrtcManager?.disconnectPeer(msg.peerId)
       window.api.p2p.destroyProxy(msg.peerId)
     }
@@ -449,6 +470,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       currentWorld.value = null
       roomCode.value = ''
       peers.value = []
+      roomMembers.value = []
+      myPeerId.value = ''
       mcLanPort.value = 0
       localPort.value = 0
       currentGameDir = ''
@@ -491,6 +514,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     roomCode.value = ''
     error.value = ''
     peers.value = []
+    roomMembers.value = []
+    myPeerId.value = ''
     mcLanPort.value = 0
     localPort.value = 0
     currentGameDir = ''
@@ -511,6 +536,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     error,
     roomCode,
     peers,
+    roomMembers,
+    myPeerId,
     mcLanPort,
     localPort,
 
