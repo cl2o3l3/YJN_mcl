@@ -231,10 +231,10 @@ async function save() {
       </div>
 
       <div class="form-group">
-        <label>Java 路径 <span class="text-hint">(留空自动检测)</span></label>
+        <label>启动 Java <span class="text-hint">(当前实例专用，留空则用全局默认/自动检测)</span></label>
         <div class="input-row">
           <select v-model="javaPath" class="flex-input">
-            <option value="">自动检测</option>
+            <option value="">跟随全局默认 / 自动检测</option>
             <option v-for="j in javas" :key="j.path" :value="j.path">
               Java {{ j.majorVersion }} ({{ j.version }}) - {{ j.path }}
             </option>

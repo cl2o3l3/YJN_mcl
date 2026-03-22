@@ -5,6 +5,8 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import type { JavaInstallation } from '../../src/types'
 import { getJavaExecutable } from './platform'
+import { getInstalledRuntimes } from './java-downloader'
+import { loadSettings } from './settings-store'
 
 const execFileAsync = promisify(execFile)
 
@@ -43,6 +45,14 @@ async function probeJava(javaPath: string): Promise<JavaInstallation | null> {
 export async function scanSystemJava(): Promise<JavaInstallation[]> {
   const candidates: string[] = []
   const javaExe = getJavaExecutable()
+  const settings = loadSettings()
+
+  if (settings.defaultJavaPath) {
+    candidates.push(settings.defaultJavaPath)
+  }
+  for (const javaPath of settings.manualJavaPaths || []) {
+    candidates.push(javaPath)
+  }
 
   // JAVA_HOME
   if (process.env.JAVA_HOME) {
@@ -133,6 +143,13 @@ export async function scanSystemJava(): Promise<JavaInstallation[]> {
       }
     } catch { /* reg 命令不可用 */ }
   }
+
+  try {
+    const installedRuntimes = await getInstalledRuntimes()
+    for (const runtime of installedRuntimes) {
+      candidates.push(runtime.javaPath)
+    }
+  } catch { /* ignore */ }
 
   // 去重 + 验证
   const seen = new Set<string>()

@@ -6,6 +6,7 @@ import { useLaunchStore } from '../stores/launch'
 import { useModloaderStore } from '../stores/modloader'
 import { useTasksStore } from '../stores/tasks'
 import { useNotificationsStore } from '../stores/notifications'
+import { useSettingsStore } from '../stores/settings'
 import type { MinecraftAccount } from '../types'
 
 const profiles = useProfilesStore()
@@ -14,6 +15,7 @@ const launch = useLaunchStore()
 const modloader = useModloaderStore()
 const tasksStore = useTasksStore()
 const notifsStore = useNotificationsStore()
+const settings = useSettingsStore()
 
 const installingLoader = ref(false)
 
@@ -64,6 +66,13 @@ function getAvatar(account: MinecraftAccount): string {
 }
 
 const selectedAvatar = computed(() => auth.selectedAccount ? getAvatar(auth.selectedAccount) : '')
+const selectedJavaLabel = computed(() => {
+  const profile = profiles.selected
+  if (!profile) return '自动检测'
+  if (profile.javaPath) return `实例指定 · ${profile.javaPath}`
+  if (settings.defaultJavaPath) return `全局默认 · ${settings.defaultJavaPath}`
+  return '自动检测'
+})
 
 watch(() => auth.selectedAccount, (acc) => { if (acc) loadAvatar(acc) }, { immediate: true })
 
@@ -146,6 +155,7 @@ async function handleLaunch() {
           {{ profiles.selected.modLoader ? ` · ${profiles.selected.modLoader.type} ${profiles.selected.modLoader.version}` : '' }}
           · {{ profiles.selected.gameDir }}
         </p>
+        <p class="text-muted">启动 Java · {{ selectedJavaLabel }}</p>
       </div>
 
       <!-- 当前账号 -->

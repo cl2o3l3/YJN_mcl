@@ -181,6 +181,12 @@ export function registerIpcHandlers() {
     // 选择 Java
     let javaPath = profile.javaPath
     if (!javaPath) {
+      const settings = loadSettings()
+      if (settings.defaultJavaPath) {
+        javaPath = settings.defaultJavaPath
+      }
+    }
+    if (!javaPath) {
       const javas = await scanSystemJava()
       const required = versionJson.javaVersion?.majorVersion || 17
       const selected = selectJava(javas, required)

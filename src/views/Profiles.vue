@@ -131,6 +131,13 @@ const loaderIcons: Record<string, string> = {
 function defaultLoaderIcon(p: GameProfile): string | null {
   return (p.modLoader && loaderIcons[p.modLoader.type]) || null
 }
+
+function javaSummary(profile: GameProfile): string {
+  if (profile.javaPath) return `实例指定 Java · ${profile.javaPath}`
+  if (settings.defaultJavaPath) return `全局默认 Java · ${settings.defaultJavaPath}`
+  return '启动时自动检测 Java'
+}
+
 const showEditor = ref(false)
 const editingProfile = ref<GameProfile | null>(null)
 
@@ -410,6 +417,7 @@ async function onDropImport(event: DragEvent) {
         <div class="profile-main">
           <h3>{{ p.name }}</h3>
           <p class="text-muted">{{ p.versionId }}{{ p.modLoader ? ` · ${p.modLoader.type} ${p.modLoader.version}` : '' }}</p>
+          <p class="text-muted small">{{ javaSummary(p) }}</p>
           <p class="text-muted small">{{ p.gameDir }}</p>
           <div v-if="p.tags && p.tags.length" class="profile-tags">
             <span v-for="t in p.tags" :key="t" class="profile-tag">{{ t }}</span>
