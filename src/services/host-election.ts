@@ -59,6 +59,8 @@ export interface ElectionEvents {
   onTransferProgress: (progress: TransferProgress) => void
   /** 检查本地是否有缓存存档 */
   onCheckLocalSave: (worldName: string) => Promise<boolean>
+  /** 传输完成后清理临时存档文件 */
+  onCleanupArchive?: (gameDir: string) => Promise<void>
   /** 日志 */
   onLog: (message: string) => void
 }
@@ -288,6 +290,11 @@ export class HostElection {
       } else {
         this.events.onLog('无其他玩家，跳过存档传输')
       }
+
+      // 清理临时存档文件
+      try {
+        await this.events.onCleanupArchive?.(packed.archivePath.replace(/[\\/]saves[\\/]\.save-sync-tmp[\\/].*$/, ''))
+      } catch { /* ignore cleanup errors */ }
 
       this.signaling.unregisterHost()
       this.events.onLog('已移交主机权限')

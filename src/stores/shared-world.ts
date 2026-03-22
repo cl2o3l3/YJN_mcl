@@ -83,7 +83,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value === 'connected' || electionState.value === 'hosting'
   )
 
-  // 当 currentWorld 变化时，同步 worldMeta 到 election
+  // 当 currentWorld 变化时，同步 worldMeta 到 election + 广播给所有 peer
   watch(currentWorld, (world) => {
     if (world && election) {
       election.setWorldMeta({
@@ -92,7 +92,27 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         modLoader: world.modLoader,
       })
     }
+    // 主机选择实例后，通过 WebRTC 广播版本信息给所有已连接的客户端
+    if (world && myRole.value === 'host' && webrtcManager) {
+      broadcastWorldMeta(world)
+    }
   })
+
+  /** 通过 WebRTC DataChannel 广播 worldMeta 给所有已连接的 peer */
+  function broadcastWorldMeta(world: SharedWorld) {
+    if (!webrtcManager) return
+    const payload = JSON.stringify({
+      worldName: world.worldName,
+      mcVersion: world.mcVersion,
+      modLoader: world.modLoader || null,
+    })
+    const msg = new TextEncoder().encode('__WORLD_META:' + payload)
+    for (const p of peers.value) {
+      if (p.state === 'connected') {
+        webrtcManager.sendToPeer(p.id, msg)
+      }
+    }
+  }
 
   // ========== 工具 ==========
 
@@ -262,6 +282,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           return false
         }
       },
+      onCleanupArchive: async (gameDir: string) => {
+        try {
+          await window.api.save.cleanup(gameDir)
+          addLog('✓ 已清理临时存档文件')
+        } catch { /* ignore */ }
+      },
       onLog: addLog,
     }
   }
@@ -342,6 +368,16 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
 
       setupDataBridge(peerId)
+
+      // 主机: 向新连接的客户端发送当前版本信息
+      if (myRole.value === 'host' && currentWorld.value) {
+        const payload = JSON.stringify({
+          worldName: currentWorld.value.worldName,
+          mcVersion: currentWorld.value.mcVersion,
+          modLoader: currentWorld.value.modLoader || null,
+        })
+        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__WORLD_META:' + payload))
+      }
     })
 
     webrtcManager.on('peer-error', (peerId: string, err: string) => {
@@ -359,6 +395,22 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     // 处理来自 peer 的数据
     webrtcManager.on('data-from-peer', async (_peerId: string, data: Uint8Array) => {
       const text = new TextDecoder().decode(data)
+
+      // 客户端: 接收主机广播的版本信息
+      if (text.startsWith('__WORLD_META:') && myRole.value === 'client') {
+        try {
+          const meta = JSON.parse(text.slice('__WORLD_META:'.length))
+          currentWorld.value = {
+            roomCode: roomCode.value,
+            worldName: meta.worldName || currentWorld.value?.worldName || '共享房间',
+            mcVersion: meta.mcVersion || '',
+            modLoader: meta.modLoader || undefined,
+            createdAt: currentWorld.value?.createdAt || Date.now(),
+          }
+          addLog(`主机版本: ${meta.mcVersion || '未知'}${meta.modLoader ? ' · ' + meta.modLoader.type + ' ' + meta.modLoader.version : ''}`)
+        } catch { /* ignore parse errors */ }
+        return
+      }
 
       if (text === '__MC_LAN_READY' && myRole.value === 'client') {
         addLog('房主已开启 MC 局域网')
@@ -494,13 +546,15 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     receiver.listen(pc).then(async ({ data, worldName: receivedWorldName }) => {
       addLog('✓ 存档接收完成，正在解包...')
       if (!currentGameDir) {
-        addLog('⚠️ 未设置游戏目录，无法解包存档')
+        addLog('⚠️ 未设置游戏目录（请先选择一个实例），无法解包存档')
         return
       }
       const worldName = receivedWorldName || currentWorld.value?.worldName || 'shared-world'
       try {
         await window.api.save.unpackBuffer(data, currentGameDir, worldName)
         addLog(`✓ 存档已解包到 saves/${worldName}`)
+        // 清理接收端临时文件
+        await window.api.save.cleanup(currentGameDir).catch(() => {})
         // 更新 worldMeta 以便 tryAutoElection 能找到这个存档
         if (election) election.setWorldMeta({
           worldName,

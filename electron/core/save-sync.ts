@@ -314,9 +314,15 @@ export async function listSaves(gameDir: string): Promise<SaveInfo[]> {
 
 /** 清理临时文件 */
 export async function cleanupTempFiles(gameDir: string): Promise<void> {
-  const tmpDir = path.join(gameDir, 'saves', '.save-sync-tmp')
-  if (fs.existsSync(tmpDir)) {
-    await fsp.rm(tmpDir, { recursive: true, force: true })
+  // 发送端的临时目录: gameDir/saves/.save-sync-tmp
+  const senderTmp = path.join(gameDir, 'saves', '.save-sync-tmp')
+  if (fs.existsSync(senderTmp)) {
+    await fsp.rm(senderTmp, { recursive: true, force: true })
+  }
+  // 接收端的临时目录: gameDir/.save-sync-tmp
+  const receiverTmp = path.join(gameDir, '.save-sync-tmp')
+  if (fs.existsSync(receiverTmp)) {
+    await fsp.rm(receiverTmp, { recursive: true, force: true })
   }
 }
 
