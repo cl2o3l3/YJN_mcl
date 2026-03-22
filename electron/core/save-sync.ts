@@ -253,10 +253,13 @@ export async function unpackSave(archivePath: string, targetDir: string, expecte
   if (fs.existsSync(targetDir)) {
     await fsp.rm(targetDir, { recursive: true, force: true })
   }
-  await fsp.rename(sourceDir, targetDir)
-
-  // 清理
-  if (fs.existsSync(tmpExtract)) {
+  if (sourceDir === tmpExtract) {
+    // 没有嵌套目录，直接重命名
+    await fsp.rename(sourceDir, targetDir)
+  } else {
+    // sourceDir 是 tmpExtract 的子目录
+    // Windows 上 rename 子目录到父目录外会 EPERM，改用 cp
+    await fsp.cp(sourceDir, targetDir, { recursive: true })
     await fsp.rm(tmpExtract, { recursive: true, force: true }).catch(() => {})
   }
 }
