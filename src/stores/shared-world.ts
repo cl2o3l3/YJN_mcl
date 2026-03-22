@@ -67,6 +67,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   const peers = ref<P2PPeer[]>([])
   const mcLanPort = ref(0)
   const localPort = ref(0)
+  /** 标记: 已收到 __MC_LAN_READY 但 localPort 尚未就绪 */
+  let hostLanReadyPending = false
+  let hostLanReadyPeerId = ''
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -365,6 +368,19 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         if (pc) {
           setupSaveReceiver(pc)
         }
+
+        // 如果 __MC_LAN_READY 在 localPort 就绪前已到达，补发 LAN 广播
+        if (hostLanReadyPending && localPort.value > 0) {
+          hostLanReadyPending = false
+          await window.api.p2p.startLanBroadcast(hostLanReadyPeerId || peerId, localPort.value, '共享世界')
+          addLog('MC 多人游戏列表中已自动显示服务器')
+          if (currentGameDir) {
+            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+          }
+        }
+
+        // 通知主机: 客户端代理已就绪，请求发送 __MC_LAN_READY
+        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__CLIENT_READY'))
       }
 
       setupDataBridge(peerId)
@@ -385,8 +401,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     })
 
     // 监听来自信令的 offer (房主接收客人的 offer)
+    // 仅在尚无活跃连接时才建立，避免降级重试时反复销毁已连接的通道
     signaling.on('offer', (msg: any) => {
-      if (msg.fromPeerId) {
+      if (msg.fromPeerId && !webrtcManager!.isPeerActive(msg.fromPeerId)) {
         const peerName = msg.peerName || msg.fromPeerId.substring(0, 6)
         webrtcManager!.connectToPeer(msg.fromPeerId, peerName, false)
       }
@@ -413,15 +430,25 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
 
       if (text === '__MC_LAN_READY' && myRole.value === 'client') {
-        addLog('房主已开启 MC 局域网')
         if (localPort.value > 0) {
+          addLog('房主已开启 MC 局域网')
           await window.api.p2p.startLanBroadcast(_peerId, localPort.value, '共享世界')
           addLog('MC 多人游戏列表中已自动显示服务器')
+          if (currentGameDir) {
+            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+          }
+        } else {
+          // localPort 尚未就绪，记住状态待 peer-connected 完成后处理
+          hostLanReadyPending = true
+          hostLanReadyPeerId = _peerId
+          addLog('房主已开启 MC 局域网（等待本地代理就绪...）')
         }
-        // Plan C: 写入 reconnect hint 以便 mod 自动重连
-        if (currentGameDir) {
-          await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
-        }
+        return
+      }
+
+      // 主机: 收到客户端代理就绪通知，补发 __MC_LAN_READY
+      if (text === '__CLIENT_READY' && myRole.value === 'host' && mcLanPort.value > 0) {
+        webrtcManager!.sendToPeer(_peerId, new TextEncoder().encode('__MC_LAN_READY'))
         return
       }
 
