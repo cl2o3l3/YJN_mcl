@@ -321,6 +321,64 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
+  // ========== 存档自动分发 ==========
+
+  /** 标记: 存档已分发过 (防止重复分发) */
+  let saveDistributed = false
+
+  /**
+   * 主机游戏退出时自动分发存档给所有已连接的客户端
+   * 由 Multiplayer.vue 监听 launch.isRunning 变化后调用
+   */
+  async function distributeSave(): Promise<void> {
+    if (myRole.value !== 'host' || !currentGameDir || !webrtcManager) return
+    if (saveDistributed) return
+    saveDistributed = true
+
+    const connectedPeers = peers.value.filter(p => p.state === 'connected')
+    if (connectedPeers.length === 0) {
+      addLog('无已连接的客户端，跳过存档分发')
+      return
+    }
+
+    try {
+      const saves = await window.api.save.list(currentGameDir)
+      if (saves.length === 0) {
+        addLog('未找到存档，跳过分发')
+        return
+      }
+      const latest = saves.sort((a: any, b: any) => b.lastModified - a.lastModified)[0]
+      addLog(`游戏已退出，正在打包存档 ${latest.name}...`)
+      const packed = await window.api.save.pack(latest.path)
+      const fileData = await window.api.save.readArchive(packed.archivePath)
+
+      addLog(`正在向 ${connectedPeers.length} 位玩家分发存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
+      const results = await Promise.allSettled(
+        connectedPeers.map(async (p) => {
+          const pc = webrtcManager?.getPeerConnection(p.id)
+          if (!pc) return false
+          return new Promise<boolean>((resolve) => {
+            const sender = new SaveSender(
+              (progress) => { transferProgress.value = progress },
+              (success, err) => {
+                transferProgress.value = null
+                if (!success) addLog(`传输给 ${p.name || p.id.substring(0, 6)} 失败: ${err}`)
+                resolve(success)
+              }
+            )
+            sender.send(pc, fileData, packed.sha1, packed.worldName).catch(() => resolve(false))
+          })
+        })
+      )
+
+      const successCount = results.filter(r => r.status === 'fulfilled' && r.value).length
+      addLog(`✓ 存档分发完成: ${successCount}/${connectedPeers.length} 成功`)
+      await window.api.save.cleanup(currentGameDir).catch(() => {})
+    } catch (e: any) {
+      addLog(`存档分发失败: ${e.message}`)
+    }
+  }
+
   // ========== P2P 代理 ==========
 
   /**
@@ -646,6 +704,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       mcLanPort.value = 0
       localPort.value = 0
       currentGameDir = ''
+      saveDistributed = false
       if (resetLogs) {
         logs.value = []
       }
@@ -690,6 +749,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     mcLanPort.value = 0
     localPort.value = 0
     currentGameDir = ''
+    saveDistributed = false
   }
 
   // 初始加载
@@ -721,6 +781,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     createWorld,
     joinWorld,
     leaveWorld,
+    distributeSave,
     setGameDir,
     removeWorldFromList,
 

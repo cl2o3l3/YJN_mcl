@@ -134,10 +134,11 @@ export class HostElection {
     // 等待 host-info 响应
     const hostInfo = await hostInfoPromise as any
 
-    if (hostInfo.host) {
+    if (hostInfo.hostId) {
       // 有主机在线 → 作为客户端连接
-      this.events.onLog(`当前主机: ${hostInfo.host.peerName}，作为客户端加入`)
-      this.setHost(hostInfo.host)
+      const host: HostInfo = { peerId: hostInfo.hostId, peerName: hostInfo.hostName || 'Unknown' }
+      this.events.onLog(`当前主机: ${host.peerName}，作为客户端加入`)
+      this.setHost(host)
       this.myRole = 'client'
       this.setState('connected')
     } else {

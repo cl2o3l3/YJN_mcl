@@ -251,6 +251,13 @@ async function handleSWLaunch() {
   }
 }
 
+// 主机游戏退出时自动分发存档
+watch(() => launch.isRunning, (running, wasRunning) => {
+  if (wasRunning && !running && sw.isActive && sw.isHost) {
+    sw.distributeSave()
+  }
+})
+
 // 回到主菜单
 function goHome() {
   if (mp.state !== 'idle') {
