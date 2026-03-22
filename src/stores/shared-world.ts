@@ -113,17 +113,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         modLoader: config.modLoader,
       }
 
-      // 2. 创建选举 (LAN 模式回调)
+      // 2. 创建选举
       election = new HostElection(signaling, {
         onStateChange: (state) => { electionState.value = state },
         onHostChange: (host) => { hostInfo.value = host },
-        onNeedBecomeHost: async (_meta) => {
-          addLog('等待 MC 客户端开启局域网...')
-          // 启动 LAN 检测器，等待用户在 MC 中点击"开启局域网"
-          const port = await waitForLanPort()
-          addLog(`✓ 检测到 LAN 端口: ${port}`)
-          return { port }
-        },
         onNeedTransferHost: async (worldName) => {
           addLog(`正在打包存档 ${worldName}...`)
           const packed = await window.api.save.pack(
@@ -206,12 +199,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       election = new HostElection(signaling, {
         onStateChange: (state) => { electionState.value = state },
         onHostChange: (host) => { hostInfo.value = host },
-        onNeedBecomeHost: async (_meta) => {
-          addLog('等待 MC 客户端开启局域网...')
-          const port = await waitForLanPort()
-          addLog(`✓ 检测到 LAN 端口: ${port}`)
-          return { port }
-        },
         onNeedTransferHost: async (worldName) => {
           const packed = await window.api.save.pack(
             `${config.gameDir}/saves/${worldName}`
@@ -292,31 +279,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       resetState()
       addLog('已离开共享世界')
     }
-  }
-
-  // ========== LAN 检测 ==========
-
-  /**
-   * 等待 MC 客户端开启局域网后检测到端口
-   * 利用已有的 LAN 检测器 (window.api.p2p)
-   */
-  function waitForLanPort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        window.api.p2p.stopLanDetector()
-        reject(new Error('等待 LAN 端口超时 (120s)'))
-      }, 120000)
-
-      window.api.p2p.onLanGames((games: Array<{ port: number }>) => {
-        if (games.length > 0) {
-          clearTimeout(timeout)
-          window.api.p2p.stopLanDetector()
-          resolve(games[0].port)
-        }
-      })
-
-      window.api.p2p.startLanDetector()
-    })
   }
 
   // ========== P2P 代理 ==========
@@ -419,31 +381,64 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     signaling.on('peer-left', onPeerLeft)
     cleanupFns.push(() => signaling?.off('peer-left', onPeerLeft))
 
-    // 房主: 持续监听 LAN 端口变化 (用户可能重新开局域网)
-    if (myRole.value === 'host') {
-      window.api.p2p.startLanDetector()
-      const unsub = window.api.p2p.onLanGames(async (games: Array<{ port: number }>) => {
-        if (games.length > 0) {
-          const port = games[0].port
-          if (mcLanPort.value !== port) {
-            mcLanPort.value = port
-            addLog(`检测到 MC LAN 端口: ${port}`)
-            // 为所有已连接的 peer 启动代理
-            for (const p of peers.value) {
-              if (p.state === 'connected') {
-                try {
-                  await window.api.p2p.startHostProxy(p.id, port)
-                  webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
-                } catch (proxyErr: any) {
-                  addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+    // 被动 LAN 检测: 任何人在 MC 中开启局域网 → 自动竞选主机
+    window.api.p2p.startLanDetector()
+    const unsubLan = window.api.p2p.onLanGames(async (games: Array<{ port: number }>) => {
+      if (games.length === 0) return
+      const port = games[0].port
+      if (mcLanPort.value === port) return
+
+      mcLanPort.value = port
+      addLog(`检测到 MC LAN 端口: ${port}`)
+
+      if (myRole.value !== 'host') {
+        // 尚未成为主机 → 尝试注册为主机
+        if (election) {
+          try {
+            await election.becomeHost(port)
+            myRole.value = election.getRole()
+            if (myRole.value === 'host') {
+              // 为已连接的 peer 启动代理
+              for (const p of peers.value) {
+                if (p.state === 'connected') {
+                  try {
+                    await window.api.p2p.startHostProxy(p.id, port)
+                    webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+                  } catch (proxyErr: any) {
+                    addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+                  }
                 }
               }
             }
+          } catch {
+            // becomeHost 失败 (host-conflict), election 已处理状态
           }
         }
-      })
-      cleanupFns.push(unsub)
+      } else {
+        // 已经是主机，LAN 端口变更 → 更新代理
+        for (const p of peers.value) {
+          if (p.state === 'connected') {
+            try {
+              await window.api.p2p.startHostProxy(p.id, port)
+              webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+            } catch (proxyErr: any) {
+              addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+            }
+          }
+        }
+      }
+    })
+    cleanupFns.push(unsubLan)
+
+    // 监听 host-changed: 当新主机出现时，非主机 peer 自动发起 WebRTC 连接
+    const onHostChangedP2P = (msg: any) => {
+      if (msg.hostId && msg.hostId !== signaling!.peerId && webrtcManager) {
+        addLog('正在与主机建立 P2P 连接...')
+        webrtcManager.connectToPeer(msg.hostId, msg.hostName || '主机', true)
+      }
     }
+    signaling.on('host-changed', onHostChangedP2P)
+    cleanupFns.push(() => signaling?.off('host-changed', onHostChangedP2P))
   }
 
   /**
@@ -459,16 +454,15 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   }
 
   /**
-   * 选举完成后启动 P2P 管线
-   * - 房主: 等待客人连接
-   * - 客户端: 主动连接房主
+   * 启动 P2P 管线 + 被动 LAN 检测
+   * 创建/加入房间后立即调用，不依赖主机是否已选举
    */
   function startP2PPipeline() {
     initWebRTC()
 
-    // 客户端主动向房主发起 WebRTC 连接
+    // 如果已有主机，主动发起 WebRTC 连接
     if (myRole.value === 'client' && hostInfo.value && webrtcManager) {
-      addLog(`正在与房主建立 P2P 连接...`)
+      addLog('正在与房主建立 P2P 连接...')
       webrtcManager.connectToPeer(hostInfo.value.peerId, hostInfo.value.peerName, true)
     }
   }

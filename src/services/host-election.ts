@@ -42,12 +42,6 @@ export interface ElectionEvents {
   /** 主机信息变化 */
   onHostChange: (host: HostInfo | null) => void
   /**
-   * 需要成为主机 — 引导用户启动 MC、加载世界、开局域网
-   * store 层负责启动 LAN 检测器并等待端口
-   * 返回检测到的 LAN 端口
-   */
-  onNeedBecomeHost: (worldMeta: WorldMeta) => Promise<{ port: number }>
-  /**
    * 主机要离开 — 打包存档用于传输
    * 返回打包结果
    */
@@ -100,7 +94,8 @@ export class HostElection {
   // ========== 上线流程 ==========
 
   /**
-   * 加入共享世界并自动选举主机
+   * 加入共享世界，查询主机状态
+   * 不再自动竞选 — 等待 LAN 检测后由 store 层调用 becomeHost(port)
    */
   async joinWorld(roomCode: string, playerName: string, worldMeta: WorldMeta): Promise<void> {
     this.worldMeta = worldMeta
@@ -136,17 +131,18 @@ export class HostElection {
         this.worldMeta = hostInfo.worldMeta
       }
     } else {
-      // 无主机 → 尝试成为主机
+      // 无主机 → 等待有人开启局域网
       if (hostInfo.worldMeta) {
         this.worldMeta = hostInfo.worldMeta
       }
-      this.events.onLog('当前无主机，正在竞选...')
-      await this.becomeHost()
+      this.events.onLog('当前无主机，等待有人在 MC 中开启局域网...')
+      this.setState('waiting-host')
     }
   }
 
   /**
-   * 创建共享世界 (自己就是第一个主机)
+   * 创建共享世界 — 只创建房间，立即返回房间码
+   * 不再阻塞等待 LAN，由 store 层被动检测 LAN 后调用 becomeHost(port)
    */
   async createWorld(playerName: string, worldMeta: WorldMeta): Promise<string> {
     this.worldMeta = worldMeta
@@ -162,25 +158,25 @@ export class HostElection {
     const roomCode = result.roomCode
     this.signaling.setRoomId(result.roomId)
 
-    // 直接成为主机
-    await this.becomeHost()
+    // 不再立即 becomeHost，等待 LAN 检测
+    this.setState('waiting-host')
+    this.events.onLog('房间已创建，等待有人在 MC 中开启局域网...')
 
     return roomCode
   }
 
   // ========== 成为主机 ==========
 
-  async becomeHost(): Promise<void> {
+  /**
+   * 成为主机 — 外部检测到 LAN 端口后调用，直接向信令服务器注册
+   */
+  async becomeHost(port: number): Promise<void> {
     if (!this.worldMeta) throw new Error('worldMeta 未设置')
 
     this.setState('becoming-host')
-    this.events.onLog('请在 MC 中加载世界并开启局域网...')
+    this.events.onLog('正在注册为主机...')
 
     try {
-      // store 层负责: 启动 LAN 检测 → 等待用户开 LAN → 返回端口
-      const { port } = await this.events.onNeedBecomeHost(this.worldMeta)
-
-      // LAN 检测期间可能断线重连，先确认连接状态
       if (!this.signaling.connected) {
         this.events.onLog('信令连接已断开，等待重连...')
         await this.waitForReconnect(15000)
@@ -299,12 +295,13 @@ export class HostElection {
   }
 
   /**
-   * 崩溃恢复：主机断连后自动竞选
+   * 崩溃恢复：主机断连后提示用户竞选
+   * 实际竞选由 store 层的被动 LAN 检测触发 becomeHost(port)
    */
   private async tryAutoElection(): Promise<void> {
     if (!this.worldMeta) return
 
-    // 稍等一下，让所有人同时进入竞选，减少冲突
+    // 稍等一下，确认确实没有新主机
     await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
 
     // 再次确认仍然没有主机
@@ -317,12 +314,8 @@ export class HostElection {
       return
     }
 
-    this.events.onLog('检测到本地有缓存存档，尝试竞选主机...')
-    try {
-      await this.becomeHost()
-    } catch {
-      // 竞选失败（被其他人抢先），不需要处理
-    }
+    this.events.onLog('检测到本地有缓存存档，请在 MC 中加载世界并开启局域网')
+    // LAN 检测器会自动触发 becomeHost
   }
 
   // ========== 工具 ==========

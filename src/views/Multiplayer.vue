@@ -982,7 +982,16 @@ function rttClass(rtt: number): string {
             <h3>加入共享世界</h3>
             <div class="sw-form">
               <label>
-                本地实例
+                房间码
+                <div class="input-row">
+                  <input v-model="swJoinCode" placeholder="输入 6 位房间码" class="input code-input" maxlength="6" />
+                  <button class="btn-primary" @click="handleJoinSharedWorld" :disabled="swJoining || swJoinCode.length < 6">
+                    {{ swJoining ? '加入中...' : '加入' }}
+                  </button>
+                </div>
+              </label>
+              <label>
+                本地实例 <span class="text-muted text-xs">(可选)</span>
                 <select v-model="swJoinProfileId" class="input" :disabled="profiles.profiles.length === 0">
                   <option value="">使用默认游戏目录</option>
                   <option v-for="profile in profiles.profiles" :key="profile.id" :value="profile.id">
@@ -993,15 +1002,6 @@ function rttClass(rtt: number): string {
               <p v-if="swSelectedJoinProfile" class="text-muted text-xs">
                 当前实例：{{ swSelectedJoinProfile.gameDir }}
               </p>
-              <label>
-                房间码
-                <div class="input-row">
-                  <input v-model="swJoinCode" placeholder="输入 6 位房间码" class="input code-input" maxlength="6" />
-                  <button class="btn-primary" @click="handleJoinSharedWorld" :disabled="swJoining || swJoinCode.length < 6">
-                    {{ swJoining ? '加入中...' : '加入' }}
-                  </button>
-                </div>
-              </label>
               <p v-if="sw.error" class="error-text">{{ sw.error }}</p>
             </div>
           </div>
@@ -1042,7 +1042,7 @@ function rttClass(rtt: number): string {
           </div>
           <div v-else class="card mt">
             <h3>主机</h3>
-            <p class="text-muted">等待主机选举中...</p>
+            <p class="text-muted">等待有人在 MC 中开启局域网...</p>
           </div>
 
           <!-- 选举状态 -->
@@ -1052,9 +1052,9 @@ function rttClass(rtt: number): string {
               <p class="text-muted">{{ {
                 'joining': '正在加入房间...',
                 'querying-host': '正在查询主机...',
-                'becoming-host': '请在 MC 中加载世界并开启局域网...',
+                'becoming-host': '正在注册为主机...',
                 'transferring': '正在传输存档...',
-                'waiting-host': '等待新主机...',
+                'waiting-host': '等待有人在 MC 中开启局域网...',
                 'receiving-save': '正在接收存档...',
               }[sw.electionState as string] || sw.electionState }}</p>
             </div>

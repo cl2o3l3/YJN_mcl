@@ -223,54 +223,57 @@ function downloadPortableExe(version: string): Promise<string> {
 }
 
 /**
- * Portable 热替换：生成 bat 脚本，等当前进程退出后覆盖 exe 并重启
+ * Portable 热替换：生成 PowerShell 脚本，等当前进程退出后覆盖 exe 并重启
+ * 使用 PowerShell -WindowStyle Hidden 避免弹出可见终端窗口
  */
 function portableHotSwap(newExePath: string): void {
   const currentExe = process.execPath
-  const currentDir = path.dirname(currentExe)
   const backupExe = currentExe + '.old'
-  const batPath = path.join(app.getPath('userData'), 'portable-update', '_update.bat')
+  const ps1Path = path.join(app.getPath('userData'), 'portable-update', '_update.ps1')
 
-  const batContent = `@echo off
-chcp 65001 >nul
-echo Updating YJN Launcher...
-set PID=${process.pid}
+  // PowerShell 单引号字符串中，单引号用两个单引号转义
+  const esc = (s: string) => s.replace(/'/g, "''")
 
-:waitloop
-tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /B /C:"%PID%" >nul 2>nul
-if %errorlevel%==0 (
-  timeout /t 1 /nobreak >nul
-  goto waitloop
-)
-REM Double-check with a short delay
-timeout /t 2 /nobreak >nul
+  const ps1Content = `$ErrorActionPreference = 'Stop'
+$pid = ${process.pid}
+$currentExe = '${esc(currentExe)}'
+$backupExe = '${esc(backupExe)}'
+$newExe = '${esc(newExePath)}'
 
-echo Replacing executable...
-if exist "${backupExe}" del /f "${backupExe}"
-move /y "${currentExe}" "${backupExe}"
-if errorlevel 1 (
-  echo ERROR: Failed to move old exe, retrying...
-  timeout /t 2 /nobreak >nul
-  move /y "${currentExe}" "${backupExe}"
-)
-copy /y "${newExePath}" "${currentExe}"
+# Wait for old process to exit
+while ($true) {
+  try {
+    Get-Process -Id $pid -ErrorAction Stop | Out-Null
+    Start-Sleep -Milliseconds 500
+  } catch {
+    break
+  }
+}
+Start-Sleep -Seconds 2
 
-echo Starting new version...
-start "" "${currentExe}"
+# Replace exe
+if (Test-Path $backupExe) { Remove-Item $backupExe -Force }
+Move-Item $currentExe $backupExe -Force
+Copy-Item $newExe $currentExe -Force
 
-timeout /t 3 /nobreak >nul
-if exist "${backupExe}" del /f "${backupExe}"
-if exist "${newExePath}" del /f "${newExePath}"
-del /f "%~f0"
+# Start new version
+Start-Process $currentExe
+
+# Cleanup
+Start-Sleep -Seconds 3
+if (Test-Path $backupExe) { Remove-Item $backupExe -Force -ErrorAction SilentlyContinue }
+if (Test-Path $newExe) { Remove-Item $newExe -Force -ErrorAction SilentlyContinue }
+
+# Self-delete
+Remove-Item $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 `
 
-  fs.writeFileSync(batPath, batContent, 'utf-8')
+  fs.writeFileSync(ps1Path, ps1Content, 'utf-8')
 
-  // 启动 bat 脚本（分离子进程，不随主进程退出而终止）
-  spawn('cmd.exe', ['/c', batPath], {
+  // 启动 PowerShell 脚本（隐藏窗口，分离子进程）
+  spawn('powershell.exe', ['-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ps1Path], {
     detached: true,
     stdio: 'ignore',
-    cwd: currentDir
   }).unref()
 
   // 强制退出应用（跳过 before-quit / close 事件防止被拦截）
