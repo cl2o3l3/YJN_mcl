@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, nextTick, watch } from 'vue'
+import { computed, onMounted, ref, nextTick, watch, toRaw } from 'vue'
 import { useMultiplayerStore } from '../stores/multiplayer'
 import { useSharedWorldStore } from '../stores/shared-world'
 import { useProfilesStore } from '../stores/profiles'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
+import { useLaunchStore } from '../stores/launch'
+import { useModloaderStore } from '../stores/modloader'
+import { useTasksStore } from '../stores/tasks'
+import { useNotificationsStore } from '../stores/notifications'
 import { diffModLists } from '../services/mod-sync'
 import SkinPreview from '../components/SkinPreview.vue'
 import type { ConnectionTier, GameProfile, MinecraftAccount, InstalledResource } from '../types'
@@ -14,6 +18,10 @@ const sw = useSharedWorldStore()
 const profiles = useProfilesStore()
 const auth = useAuthStore()
 const settings = useSettingsStore()
+const launch = useLaunchStore()
+const modloader = useModloaderStore()
+const tasksStore = useTasksStore()
+const notifsStore = useNotificationsStore()
 
 const joinCode = ref('')
 const showDiagModal = ref(false)
@@ -182,6 +190,61 @@ function getMemberP2PState(peerId: string): string {
 function getMemberRtt(peerId: string): number {
   const peer = sw.peers.find(p => p.id === peerId)
   return peer?.rtt || 0
+}
+
+// ========== 共享世界：启动游戏 ==========
+const swLaunching = ref(false)
+const swInstallingLoader = ref(false)
+
+async function handleSWLaunch() {
+  const profile = swSelectedProfile.value
+  if (!profile || !auth.selectedAccount) return
+
+  launch.ensureListeners()
+  swLaunching.value = true
+  launch.error = ''
+
+  try {
+    let versionId = profile.versionId
+
+    if (profile.modLoader) {
+      swInstallingLoader.value = true
+      try {
+        versionId = await modloader.install(
+          profile.modLoader.type,
+          profile.versionId,
+          profile.modLoader.version,
+          profile.gameDir,
+          profile.javaPath || undefined
+        )
+      } finally {
+        swInstallingLoader.value = false
+      }
+    }
+
+    const taskId = tasksStore.addTask('game', `启动 ${profile.name}`)
+    const unsubProgress = window.api.download.onProgress((p) => {
+      launch.downloadProgress = p
+      tasksStore.updateProgress(taskId, { completed: p.completed, total: p.total, speed: p.speed })
+    })
+    await window.api.download.installVersion(versionId, profile.gameDir)
+    unsubProgress()
+    launch.downloadProgress = null
+    tasksStore.completeTask(taskId)
+
+    launch.isRunning = true
+    const rawAccount = JSON.parse(JSON.stringify(toRaw(auth.selectedAccount)))
+    await window.api.launch.start(profile.id, rawAccount)
+    sw.addLog('✓ 游戏已启动，请在 MC 中打开「对局域网开放」')
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    launch.error = msg
+    launch.isRunning = false
+    notifsStore.push('error', `启动失败: ${msg}`)
+    sw.addLog(`启动失败: ${msg}`)
+  } finally {
+    swLaunching.value = false
+  }
 }
 
 // 回到主菜单
@@ -908,6 +971,17 @@ function rttClass(rtt: number): string {
               </select>
               <p v-if="swSelectedProfile" class="text-muted text-xs">
                 实例目录：{{ swSelectedProfile.gameDir }}
+              </p>
+              <button
+                v-if="swSelectedProfile"
+                class="btn-primary mt-sm"
+                @click="handleSWLaunch"
+                :disabled="swLaunching || launch.isRunning"
+              >
+                {{ swLaunching ? (swInstallingLoader ? '安装 Loader...' : '准备中...') : launch.isRunning ? '游戏运行中' : '🚀 启动游戏' }}
+              </button>
+              <p v-if="launch.isRunning && sw.isHost && sw.mcLanPort === 0" class="text-muted text-xs mt-sm">
+                游戏已启动，请在 MC 中进入存档 → Esc → 对局域网开放 → 创建
               </p>
             </div>
           </div>
