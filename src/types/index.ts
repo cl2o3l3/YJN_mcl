@@ -539,7 +539,7 @@ export function getDefaultSettings(): LauncherSettings {
     mirrorSource: 'bmclapi',
     defaultJvmArgs: getDefaultJvmArgs(),
     defaultGameDir: '',    // 运行时根据平台计算
-    defaultVersionIsolation: false,
+    defaultVersionIsolation: true,
     defaultJavaPath: '',   // 运行时自动检测
     manualJavaPaths: [],
     gameDirs: [],

@@ -59,8 +59,6 @@ export interface ElectionEvents {
   onTransferProgress: (progress: TransferProgress) => void
   /** 检查本地是否有缓存存档 */
   onCheckLocalSave: (worldName: string) => Promise<boolean>
-  /** 传输完成后清理临时存档文件 */
-  onCleanupArchive?: (gameDir: string) => Promise<void>
   /** 日志 */
   onLog: (message: string) => void
 }
@@ -134,11 +132,10 @@ export class HostElection {
     // 等待 host-info 响应
     const hostInfo = await hostInfoPromise as any
 
-    if (hostInfo.hostId) {
+    if (hostInfo.host) {
       // 有主机在线 → 作为客户端连接
-      const host: HostInfo = { peerId: hostInfo.hostId, peerName: hostInfo.hostName || 'Unknown' }
-      this.events.onLog(`当前主机: ${host.peerName}，作为客户端加入`)
-      this.setHost(host)
+      this.events.onLog(`当前主机: ${hostInfo.host.peerName}，作为客户端加入`)
+      this.setHost(hostInfo.host)
       this.myRole = 'client'
       this.setState('connected')
     } else {
@@ -264,38 +261,26 @@ export class HostElection {
         this.worldMeta.worldName = packed.worldName
       }
 
-      // 向所有玩家广播存档
-      const peers = this.roomPeers.filter(p => p.id !== this.signaling.peerId)
-      if (peers.length > 0) {
-        this.events.onLog(`正在向 ${peers.length} 位玩家广播存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
-        const results = await Promise.allSettled(
-          peers.map(async (peer) => {
-            try {
-              const ok = await this.events.onTransferSaveToPeer(
-                peer.id, packed.archivePath, packed.sha1, packed.size, packed.worldName
-              )
-              if (ok) {
-                this.events.onLog(`✓ 存档已传输给 ${peer.name}`)
-              } else {
-                this.events.onLog(`存档传输给 ${peer.name} 失败`)
-              }
-              return ok
-            } catch (e: any) {
-              this.events.onLog(`传输给 ${peer.name} 异常: ${e.message}`)
-              return false
-            }
-          })
-        )
-        const successCount = results.filter(r => r.status === 'fulfilled' && r.value).length
-        this.events.onLog(`存档广播完成: ${successCount}/${peers.length} 成功`)
+      // 尝试将存档传输给候选人
+      const candidates = this.roomPeers.filter(p => p.id !== this.signaling.peerId)
+      if (candidates.length > 0) {
+        const candidate = candidates[0]
+        this.events.onLog(`正在向 ${candidate.name} 传输存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
+        try {
+          const ok = await this.events.onTransferSaveToPeer(
+            candidate.id, packed.archivePath, packed.sha1, packed.size, packed.worldName
+          )
+          if (ok) {
+            this.events.onLog('✓ 存档已传输给候选人')
+          } else {
+            this.events.onLog('存档传输失败，候选人可能需要手动加载存档')
+          }
+        } catch (e: any) {
+          this.events.onLog(`存档传输异常: ${e.message}`)
+        }
       } else {
-        this.events.onLog('无其他玩家，跳过存档传输')
+        this.events.onLog('无候选人，跳过存档传输')
       }
-
-      // 清理临时存档文件
-      try {
-        await this.events.onCleanupArchive?.(packed.archivePath.replace(/[\\/]saves[\\/]\.save-sync-tmp[\\/].*$/, ''))
-      } catch { /* ignore cleanup errors */ }
 
       this.signaling.unregisterHost()
       this.events.onLog('已移交主机权限')

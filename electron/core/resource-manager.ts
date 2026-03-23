@@ -24,25 +24,6 @@ function getResourceDir(gameDir: string, type: ResourceType): string {
   return path.join(gameDir, getResourceSubdir(type))
 }
 
-function resolveInstallPaths(basePath: string, type: ResourceType): { gameDir: string; destDir: string } {
-  const subdir = getResourceSubdir(type).toLowerCase()
-  const normalized = path.resolve(basePath)
-  const last = path.basename(normalized).toLowerCase()
-
-  // 兼容资源页传入“实例根目录”或“具体资源目录”两种情况，避免出现 mods/mods 之类的嵌套目录。
-  if (last === subdir) {
-    return {
-      gameDir: path.dirname(normalized),
-      destDir: normalized,
-    }
-  }
-
-  return {
-    gameDir: normalized,
-    destDir: path.join(normalized, getResourceSubdir(type)),
-  }
-}
-
 // ========== 元数据文件 ==========
 
 const METADATA_FILE = '.mc-launcher-resources.json'
@@ -119,8 +100,7 @@ export async function installResource(
   gameDir: string,
   projectMeta: { projectId: string; platform: ResourcePlatform; versionId: string; versionNumber: string; title: string }
 ): Promise<string> {
-  const paths = resolveInstallPaths(gameDir, type)
-  const destDir = paths.destDir
+  const destDir = getResourceDir(gameDir, type)
   await fsp.mkdir(destDir, { recursive: true })
 
   const destPath = path.join(destDir, file.filename)
@@ -132,7 +112,7 @@ export async function installResource(
   // 这里用 SHA1 即可，Modrinth 提供的 SHA1 可靠
 
   // 写入元数据
-  const meta = await readMetadata(paths.gameDir)
+  const meta = await readMetadata(gameDir)
   // 更新或追加
   const existing = meta.installed.findIndex(
     r => r.filename === file.filename && r.type === type
@@ -153,7 +133,7 @@ export async function installResource(
   } else {
     meta.installed.push(record)
   }
-  await writeMetadata(paths.gameDir, meta)
+  await writeMetadata(gameDir, meta)
 
   return destPath
 }

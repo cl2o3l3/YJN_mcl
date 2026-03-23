@@ -37,6 +37,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     modLoader?: ModLoaderInfo
     windowWidth?: number
     windowHeight?: number
+    accountId?: string
     iconPath?: string
     tags?: string[]
   }) {

@@ -163,12 +163,6 @@ export class WebRTCManager {
     return this.peers.get(peerId)?.tier
   }
 
-  /** 判断某 peer 是否已连接或正在连接 */
-  isPeerActive(peerId: string): boolean {
-    const m = this.peers.get(peerId)
-    return !!m && (m.state === 'connected' || m.state === 'connecting')
-  }
-
   /** 获取某 peer 的底层 RTCPeerConnection（仅 WebRTC 连接可用） */
   getPeerConnection(peerId: string): RTCPeerConnection | null {
     return this.peers.get(peerId)?.connection?.pc ?? null

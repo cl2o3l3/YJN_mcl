@@ -5,9 +5,10 @@
  */
 
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater'
-import { BrowserWindow, shell, app, net } from 'electron'
+import { BrowserWindow, shell, app } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as https from 'https'
 import { spawn } from 'child_process'
 
 // electron-updater 日志走 console
@@ -40,9 +41,6 @@ export interface UpdateStatus {
 let pendingVersion = ''
 /** portable 下载后的临时文件路径 */
 let portableDownloadedPath = ''
-const PORTABLE_DOWNLOAD_CONNECT_TIMEOUT_MS = 30_000
-const PORTABLE_DOWNLOAD_STALL_TIMEOUT_MS = 60_000
-const PORTABLE_DOWNLOAD_MAX_RETRIES = 3
 
 function broadcast(channel: string, ...args: any[]) {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -120,7 +118,7 @@ function portableExeName(version: string): string {
 }
 
 /** 从 GitHub Release 下载 portable exe */
-async function downloadPortableExe(version: string): Promise<string> {
+function downloadPortableExe(version: string): Promise<string> {
   const fileName = portableExeName(version)
   const url = `https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/v${version}/${fileName}`
   const tmpDir = path.join(app.getPath('userData'), 'portable-update')
@@ -130,100 +128,98 @@ async function downloadPortableExe(version: string): Promise<string> {
   // 清理旧文件
   if (fs.existsSync(destPath)) fs.unlinkSync(destPath)
 
-  let lastError: unknown = null
+  return new Promise((resolve, reject) => {
+    const download = (downloadUrl: string, redirects = 0) => {
+      if (redirects > 5) {
+        reject(new Error('下载重定向次数过多'))
+        return
+      }
 
-  for (let attempt = 1; attempt <= PORTABLE_DOWNLOAD_MAX_RETRIES; attempt++) {
-    const controller = new AbortController()
-    const connectTimer = setTimeout(() => controller.abort(), PORTABLE_DOWNLOAD_CONNECT_TIMEOUT_MS)
-    let stallTimer: ReturnType<typeof setInterval> | null = null
-    let file: fs.WriteStream | null = null
-
-    try {
-      const res = await net.fetch(url, {
-        method: 'GET',
+      const parsedUrl = new URL(downloadUrl)
+      const options = {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname + parsedUrl.search,
         headers: { 'User-Agent': `YJN-Launcher/${app.getVersion()}` },
-        redirect: 'follow',
-        signal: controller.signal,
-      })
-
-      clearTimeout(connectTimer)
-
-      if (!res.ok) {
-        throw new Error(`下载失败: HTTP ${res.status}（Release 可能尚未发布）`)
+        timeout: 30000 // 30 秒连接超时
       }
 
-      if (!res.body) {
-        throw new Error('下载失败：响应体为空')
-      }
-
-      const totalBytes = parseInt(res.headers.get('content-length') || '0', 10)
-      let transferred = 0
-      let lastReport = 0
-      let lastDataTime = Date.now()
-      const startTime = Date.now()
-      const reader = res.body.getReader()
-      file = fs.createWriteStream(destPath)
-
-      stallTimer = setInterval(() => {
-        if (Date.now() - lastDataTime > PORTABLE_DOWNLOAD_STALL_TIMEOUT_MS) {
-          controller.abort()
-        }
-      }, 10_000)
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!value) continue
-
-        transferred += value.length
-        lastDataTime = Date.now()
-
-        if (!file.write(Buffer.from(value))) {
-          await new Promise<void>((resolve) => file!.once('drain', resolve))
+      const req = https.get(options, (res) => {
+        // GitHub 会 302 重定向到 CDN
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          download(res.headers.location, redirects + 1)
+          return
         }
 
-        const now = Date.now()
-        if (now - lastReport > 200 || transferred === totalBytes) {
-          lastReport = now
-          const elapsed = Math.max(1, (now - startTime) / 1000)
-          sendStatus({
-            status: 'downloading',
-            progress: {
-              percent: totalBytes > 0 ? (transferred / totalBytes) * 100 : 0,
-              bytesPerSecond: transferred / elapsed,
-              transferred,
-              total: totalBytes
-            }
+        if (res.statusCode !== 200) {
+          reject(new Error(`下载失败: HTTP ${res.statusCode}（Release 可能尚未发布）`))
+          return
+        }
+
+        const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
+        let transferred = 0
+        let lastReport = 0
+        let lastDataTime = Date.now()
+        const file = fs.createWriteStream(destPath)
+
+        // 数据传输停滞检测（60 秒无数据则超时）
+        const stallTimer = setInterval(() => {
+          if (Date.now() - lastDataTime > 60000) {
+            clearInterval(stallTimer)
+            req.destroy()
+            file.close()
+            fs.unlink(destPath, () => {})
+            reject(new Error('下载超时：60 秒内无数据传输'))
+          }
+        }, 10000)
+
+        res.on('data', (chunk: Buffer) => {
+          transferred += chunk.length
+          lastDataTime = Date.now()
+          file.write(chunk)
+
+          const now = Date.now()
+          if (now - lastReport > 200 || transferred === totalBytes) {
+            lastReport = now
+            const elapsed = Math.max(1, (now - startTime) / 1000)
+            sendStatus({
+              status: 'downloading',
+              progress: {
+                percent: totalBytes > 0 ? (transferred / totalBytes) * 100 : 0,
+                bytesPerSecond: transferred / elapsed,
+                transferred,
+                total: totalBytes
+              }
+            })
+          }
+        })
+
+        const startTime = Date.now()
+
+        res.on('end', () => {
+          clearInterval(stallTimer)
+          file.end(() => {
+            resolve(destPath)
           })
-        }
-      }
+        })
 
-      clearInterval(stallTimer)
-      await new Promise<void>((resolve, reject) => {
-        file!.end((err?: Error | null) => err ? reject(err) : resolve())
+        res.on('error', (err) => {
+          clearInterval(stallTimer)
+          file.close()
+          fs.unlink(destPath, () => {})
+          reject(err)
+        })
       })
-      return destPath
-    } catch (err: any) {
-      lastError = err
-      clearTimeout(connectTimer)
-      if (stallTimer) clearInterval(stallTimer)
-      try { file?.destroy() } catch { /* ignore */ }
-      if (fs.existsSync(destPath)) fs.unlinkSync(destPath)
 
-      if (attempt >= PORTABLE_DOWNLOAD_MAX_RETRIES) break
+      req.on('timeout', () => {
+        req.destroy()
+        reject(new Error('下载连接超时（30秒）'))
+      })
 
-      await new Promise(resolve => setTimeout(resolve, attempt * 1500))
-    } finally {
-      clearTimeout(connectTimer)
-      if (stallTimer) clearInterval(stallTimer)
+      req.on('error', reject)
     }
-  }
 
-  const msg = lastError instanceof Error ? lastError.message : String(lastError)
-  if (msg.includes('aborted')) {
-    throw new Error('下载超时：连接过慢或 60 秒内无数据传输')
-  }
-  throw new Error(msg || '下载失败')
+    download(url)
+  })
 }
 
 /**

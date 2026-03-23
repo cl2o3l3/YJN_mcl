@@ -235,11 +235,7 @@ async function handleSWLaunch() {
     launch.isRunning = true
     const rawAccount = JSON.parse(JSON.stringify(toRaw(auth.selectedAccount)))
     await window.api.launch.start(profile.id, rawAccount)
-    if (sw.myRole === 'host' || !sw.myRole) {
-      sw.addLog('✓ 游戏已启动，请在 MC 中打开「对局域网开放」')
-    } else {
-      sw.addLog('✓ 游戏已启动，请在 MC 中打开「多人游戏」连接服务器')
-    }
+    sw.addLog('✓ 游戏已启动，请在 MC 中打开「对局域网开放」')
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     launch.error = msg
@@ -250,13 +246,6 @@ async function handleSWLaunch() {
     swLaunching.value = false
   }
 }
-
-// 主机游戏退出时自动分发存档
-watch(() => launch.isRunning, (running, wasRunning) => {
-  if (wasRunning && !running && sw.isActive && sw.isHost) {
-    sw.distributeSave()
-  }
-})
 
 // 回到主菜单
 function goHome() {

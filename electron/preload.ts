@@ -319,8 +319,6 @@ const api = {
       ipcRenderer.invoke('save:readArchive', archivePath) as Promise<ArrayBuffer>,
     unpackBuffer: (data: ArrayBuffer, gameDir: string, worldName: string) =>
       ipcRenderer.invoke('save:unpackBuffer', data, gameDir, worldName) as Promise<void>,
-    cleanup: (gameDir: string) =>
-      ipcRenderer.invoke('save:cleanup', gameDir) as Promise<void>,
   },
 
   // ========== 自动重连提示 (Plan C) ==========

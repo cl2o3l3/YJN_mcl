@@ -310,8 +310,7 @@ async function onPickInstance(profile: GameProfile) {
   if (requiredDeps.length > 0) {
     pendingDepInstall.value = { version, file, gameDir: selectedDir }
     try {
-      const plainVersion = JSON.parse(JSON.stringify(version))
-      deps.value = await window.api.resources.dependencies(plainVersion, expandedProject.value.platform)
+      deps.value = await window.api.resources.dependencies(version, expandedProject.value.platform)
     } catch {
       deps.value = { required: [], optional: [] }
     }
@@ -750,7 +749,7 @@ function totalPages(): number {
     <div v-if="showInstancePicker" class="deps-overlay" @click.self="cancelInstancePick">
       <div class="deps-panel card">
         <h3>选择安装位置</h3>
-        <p class="deps-hint">以下实例使用 {{ selectedGameVersion }} 版本，请先选择实例；随后可选择实例根目录或对应的资源目录。</p>
+        <p class="deps-hint">以下实例使用 {{ selectedGameVersion }} 版本，请选择要安装到哪个实例：</p>
         <div class="instance-list">
           <button
             v-for="p in matchedProfiles" :key="p.id"

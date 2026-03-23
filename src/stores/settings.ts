@@ -13,7 +13,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const backgroundImage = ref<string | undefined>(undefined)
   const backgroundOpacity = ref(0.3)
   const defaultGameDir = ref('')
-  const defaultVersionIsolation = ref(false)
+  const defaultVersionIsolation = ref(true)
   const gameDirs = ref<string[]>([])
   const defaultJavaPath = ref('')
   const manualJavaPaths = ref<string[]>([])
@@ -42,12 +42,12 @@ export const useSettingsStore = defineStore('settings', () => {
       backgroundImage: backgroundImage.value,
       backgroundOpacity: backgroundOpacity.value,
       defaultGameDir: defaultGameDir.value,
+      defaultVersionIsolation: defaultVersionIsolation.value,
       gameDirs: gameDirs.value,
       defaultJavaPath: defaultJavaPath.value,
       manualJavaPaths: manualJavaPaths.value,
       defaultJvmArgs: defaultJvmArgs.value,
       maxConcurrentDownloads: downloadConcurrency.value,
-      defaultVersionIsolation: defaultVersionIsolation.value,
       defaultMinMemory: defaultMinMemory.value,
       defaultMaxMemory: defaultMaxMemory.value,
       signalingServer: signalingServer.value,
@@ -317,8 +317,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     mirrorSource, theme, accentColor, bgColor, backgroundImage, backgroundOpacity,
-    defaultGameDir, gameDirs, defaultJavaPath,
-    defaultVersionIsolation,
+    defaultGameDir, defaultVersionIsolation, gameDirs, defaultJavaPath,
     manualJavaPaths, defaultJvmArgs, downloadConcurrency,
     defaultMinMemory, defaultMaxMemory, totalMemory, clientId, curseForgeApiKey,
     signalingServer, stunServers, turnServers, relayServers, enableIPv6, relayFallback,

@@ -253,13 +253,10 @@ export async function unpackSave(archivePath: string, targetDir: string, expecte
   if (fs.existsSync(targetDir)) {
     await fsp.rm(targetDir, { recursive: true, force: true })
   }
-  if (sourceDir === tmpExtract) {
-    // 没有嵌套目录，直接重命名
-    await fsp.rename(sourceDir, targetDir)
-  } else {
-    // sourceDir 是 tmpExtract 的子目录
-    // Windows 上 rename 子目录到父目录外会 EPERM，改用 cp
-    await fsp.cp(sourceDir, targetDir, { recursive: true })
+  await fsp.rename(sourceDir, targetDir)
+
+  // 清理
+  if (fs.existsSync(tmpExtract)) {
     await fsp.rm(tmpExtract, { recursive: true, force: true }).catch(() => {})
   }
 }
@@ -314,15 +311,9 @@ export async function listSaves(gameDir: string): Promise<SaveInfo[]> {
 
 /** 清理临时文件 */
 export async function cleanupTempFiles(gameDir: string): Promise<void> {
-  // 发送端的临时目录: gameDir/saves/.save-sync-tmp
-  const senderTmp = path.join(gameDir, 'saves', '.save-sync-tmp')
-  if (fs.existsSync(senderTmp)) {
-    await fsp.rm(senderTmp, { recursive: true, force: true })
-  }
-  // 接收端的临时目录: gameDir/.save-sync-tmp
-  const receiverTmp = path.join(gameDir, '.save-sync-tmp')
-  if (fs.existsSync(receiverTmp)) {
-    await fsp.rm(receiverTmp, { recursive: true, force: true })
+  const tmpDir = path.join(gameDir, 'saves', '.save-sync-tmp')
+  if (fs.existsSync(tmpDir)) {
+    await fsp.rm(tmpDir, { recursive: true, force: true })
   }
 }
 
