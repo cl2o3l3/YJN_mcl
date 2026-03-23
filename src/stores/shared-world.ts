@@ -64,6 +64,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   let cleanupFns: (() => void)[] = []
   let leaveInProgress = false
   let launchExitListenerSetup = false
+  let preDistributedSave = false
+  let cachedPackedSave: { archivePath: string; size: number; sha1: string; worldName: string } | null = null
 
   // P2P 状态
   const peers = ref<P2PPeer[]>([])
@@ -127,13 +129,89 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
+  async function prepareLatestSaveArchive() {
+    if (cachedPackedSave) return cachedPackedSave
+    if (!currentGameDir) throw new Error('未设置游戏目录')
+
+    const saves = await window.api.save.list(currentGameDir)
+    if (saves.length === 0) throw new Error('未找到任何存档')
+    const latest = saves.sort((a: any, b: any) => b.lastModified - a.lastModified)[0]
+    addLog(`正在打包存档 ${latest.name}...`)
+
+    const packed = await window.api.save.pack(latest.path)
+    cachedPackedSave = {
+      archivePath: packed.archivePath,
+      size: packed.size,
+      sha1: packed.sha1,
+      worldName: packed.worldName,
+    }
+
+    if (!currentWorld.value || currentWorld.value.worldName !== packed.worldName) {
+      currentWorld.value = {
+        roomCode: roomCode.value,
+        worldName: packed.worldName,
+        mcVersion: currentWorld.value?.mcVersion || '',
+        modLoader: currentWorld.value?.modLoader,
+        createdAt: currentWorld.value?.createdAt || Date.now(),
+      }
+    }
+
+    return cachedPackedSave
+  }
+
+  async function distributeSaveToAllPeersOnExit() {
+    if (!webrtcManager || !isHost.value) return
+
+    const connectedPeers = peers.value.filter(p => p.state === 'connected')
+    if (connectedPeers.length === 0) {
+      addLog('房间内没有已连接玩家，跳过存档广播')
+      return
+    }
+
+    const packed = await prepareLatestSaveArchive()
+    const fileData = await window.api.save.readArchive(packed.archivePath)
+
+    addLog(`检测到游戏退出，正在向 ${connectedPeers.length} 位玩家广播存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
+
+    const results = await Promise.allSettled(connectedPeers.map((peer) => {
+      const pc = webrtcManager?.getPeerConnection(peer.id)
+      if (!pc) {
+        addLog(`${peer.name || peer.id.substring(0, 6)} 无 WebRTC 连接，跳过发送`)
+        return Promise.resolve(false)
+      }
+
+      return new Promise<boolean>((resolve) => {
+        const sender = new SaveSender(
+          (progress) => { transferProgress.value = progress },
+          (success, err) => {
+            transferProgress.value = null
+            if (!success) {
+              addLog(`发送给 ${peer.name || peer.id.substring(0, 6)} 失败: ${err}`)
+            }
+            resolve(success)
+          }
+        )
+        sender.send(pc, fileData, packed.sha1, packed.worldName).catch(() => resolve(false))
+      })
+    }))
+
+    const successCount = results.filter(r => r.status === 'fulfilled' && r.value).length
+    preDistributedSave = successCount > 0
+    addLog(`✓ 存档广播完成: ${successCount}/${connectedPeers.length} 成功`)
+  }
+
   function setupLaunchExitListener() {
     if (launchExitListenerSetup) return
     launchExitListenerSetup = true
 
     window.api.launch.onExit(async () => {
       if (!isActive.value || !isHost.value || leaveInProgress) return
-      addLog('检测到 MC 已退出，正在自动迁移房主并传输存档...')
+      addLog('检测到 MC 已退出，正在向房间内玩家发送存档并离开共享世界...')
+      try {
+        await distributeSaveToAllPeersOnExit()
+      } catch (e: any) {
+        addLog(`退出时广播存档失败: ${e.message}`)
+      }
       await leaveWorld()
     })
   }
@@ -242,14 +320,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         if (election) myRole.value = election.getRole()
       },
       onNeedTransferHost: async (_suggestedName: string) => {
-        if (!currentGameDir) throw new Error('未设置游戏目录')
-        // 自动检测最近修改的存档（MC 刚退出，最后修改的就是正在玩的世界）
-        const saves = await window.api.save.list(currentGameDir)
-        if (saves.length === 0) throw new Error('未找到任何存档')
-        const latest = saves.sort((a: any, b: any) => b.lastModified - a.lastModified)[0]
-        addLog(`正在打包存档 ${latest.name}...`)
-        const packed = await window.api.save.pack(latest.path)
-        return { archivePath: packed.archivePath, size: packed.size, sha1: packed.sha1, worldName: packed.worldName }
+        return prepareLatestSaveArchive()
       },
       onNeedReceiveSave: async (archivePath: string, sha1: string, worldName: string) => {
         addLog(`正在解包存档 ${worldName}...`)
@@ -262,6 +333,11 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         transferProgress.value = progress
       },
       onTransferSaveToPeer: async (candidatePeerId: string, archivePath: string, sha1: string, _size: number, worldName: string) => {
+        if (preDistributedSave) {
+          addLog('存档已在退出时广播给房间内玩家，跳过候选人定向传输')
+          return true
+        }
+
         const pc = webrtcManager?.getPeerConnection(candidatePeerId)
         if (!pc) {
           addLog('候选人无 WebRTC 连接，无法传输存档')
@@ -647,6 +723,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       localPort.value = 0
       hostLanReadyPending = false
       hostLanReadyPeerId = ''
+      preDistributedSave = false
+      cachedPackedSave = null
       currentGameDir = ''
       if (resetLogs) {
         logs.value = []
@@ -693,6 +771,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     localPort.value = 0
     hostLanReadyPending = false
     hostLanReadyPeerId = ''
+    preDistributedSave = false
+    cachedPackedSave = null
     currentGameDir = ''
   }
 
