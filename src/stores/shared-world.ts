@@ -69,6 +69,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   const peers = ref<P2PPeer[]>([])
   const mcLanPort = ref(0)
   const localPort = ref(0)
+  let hostLanReadyPending = false
+  let hostLanReadyPeerId = ''
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -85,7 +87,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value === 'connected' || electionState.value === 'hosting'
   )
 
-  // 当 currentWorld 变化时，同步 worldMeta 到 election
+  // 当 currentWorld 变化时，同步 worldMeta 到 election + 广播给所有 peer
   watch(currentWorld, (world) => {
     if (world && election) {
       election.setWorldMeta({
@@ -94,7 +96,25 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         modLoader: world.modLoader,
       })
     }
+    if (world && myRole.value === 'host' && webrtcManager) {
+      broadcastWorldMeta(world)
+    }
   })
+
+  function broadcastWorldMeta(world: SharedWorld) {
+    if (!webrtcManager) return
+    const payload = JSON.stringify({
+      worldName: world.worldName,
+      mcVersion: world.mcVersion,
+      modLoader: world.modLoader || null,
+    })
+    const msg = new TextEncoder().encode('__WORLD_META:' + payload)
+    for (const p of peers.value) {
+      if (p.state === 'connected') {
+        webrtcManager.sendToPeer(p.id, msg)
+      }
+    }
+  }
 
   // ========== 工具 ==========
 
@@ -358,9 +378,29 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         if (pc) {
           setupSaveReceiver(pc)
         }
+
+        if (hostLanReadyPending && localPort.value > 0) {
+          hostLanReadyPending = false
+          await window.api.p2p.startLanBroadcast(hostLanReadyPeerId || peerId, localPort.value, '共享世界')
+          addLog('MC 多人游戏列表中已自动显示服务器')
+          if (currentGameDir) {
+            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+          }
+        }
+
+        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__CLIENT_READY'))
       }
 
       setupDataBridge(peerId)
+
+      if (myRole.value === 'host' && currentWorld.value) {
+        const payload = JSON.stringify({
+          worldName: currentWorld.value.worldName,
+          mcVersion: currentWorld.value.mcVersion,
+          modLoader: currentWorld.value.modLoader || null,
+        })
+        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__WORLD_META:' + payload))
+      }
     })
 
     webrtcManager.on('peer-error', (peerId: string, err: string) => {
@@ -379,15 +419,40 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     webrtcManager.on('data-from-peer', async (_peerId: string, data: Uint8Array) => {
       const text = new TextDecoder().decode(data)
 
+      if (text.startsWith('__WORLD_META:') && myRole.value === 'client') {
+        try {
+          const meta = JSON.parse(text.slice('__WORLD_META:'.length))
+          currentWorld.value = {
+            roomCode: roomCode.value,
+            worldName: meta.worldName || currentWorld.value?.worldName || '共享房间',
+            mcVersion: meta.mcVersion || '',
+            modLoader: meta.modLoader || undefined,
+            createdAt: currentWorld.value?.createdAt || Date.now(),
+          }
+          addLog(`主机版本: ${meta.mcVersion || '未知'}${meta.modLoader ? ' · ' + meta.modLoader.type + ' ' + meta.modLoader.version : ''}`)
+        } catch {
+          // ignore parse errors
+        }
+        return
+      }
+
+      if (text === '__CLIENT_READY' && myRole.value === 'host' && mcLanPort.value > 0) {
+        webrtcManager?.sendToPeer(_peerId, new TextEncoder().encode('__MC_LAN_READY'))
+        return
+      }
+
       if (text === '__MC_LAN_READY' && myRole.value === 'client') {
         addLog('房主已开启 MC 局域网')
         if (localPort.value > 0) {
           await window.api.p2p.startLanBroadcast(_peerId, localPort.value, '共享世界')
           addLog('MC 多人游戏列表中已自动显示服务器')
-        }
-        // Plan C: 写入 reconnect hint 以便 mod 自动重连
-        if (currentGameDir) {
-          await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+          if (currentGameDir) {
+            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+          }
+        } else {
+          hostLanReadyPending = true
+          hostLanReadyPeerId = _peerId
+          addLog('房主已开启 MC 局域网（等待本地代理就绪...）')
         }
         return
       }
@@ -580,6 +645,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       myPeerId.value = ''
       mcLanPort.value = 0
       localPort.value = 0
+      hostLanReadyPending = false
+      hostLanReadyPeerId = ''
       currentGameDir = ''
       if (resetLogs) {
         logs.value = []
@@ -624,6 +691,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     myPeerId.value = ''
     mcLanPort.value = 0
     localPort.value = 0
+    hostLanReadyPending = false
+    hostLanReadyPeerId = ''
     currentGameDir = ''
   }
 
