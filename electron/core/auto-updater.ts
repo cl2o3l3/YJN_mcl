@@ -10,6 +10,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as https from 'https'
 import { spawn } from 'child_process'
+import { destroyOverlayWindow } from './overlay-window'
 
 // electron-updater 日志走 console
 autoUpdater.logger = console
@@ -41,6 +42,8 @@ export interface UpdateStatus {
 let pendingVersion = ''
 /** portable 下载后的临时文件路径 */
 let portableDownloadedPath = ''
+/** 防止重复执行安装 */
+let installRequested = false
 
 function broadcast(channel: string, ...args: any[]) {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -315,14 +318,30 @@ export async function downloadUpdate(): Promise<void> {
 }
 
 export function installUpdate(): void {
+  if (installRequested) return
+  installRequested = true
+
   if (isPortable) {
     if (!portableDownloadedPath || !fs.existsSync(portableDownloadedPath)) {
+      installRequested = false
       sendStatus({ status: 'error', error: '更新文件不存在，请重新下载' })
       return
     }
     portableHotSwap(portableDownloadedPath)
   } else {
-    autoUpdater.quitAndInstall(false, true)
+    // 清理辅助窗口，避免隐藏窗口让进程残留，导致安装器未接管
+    destroyOverlayWindow()
+
+    // 避免在 IPC 回调栈中同步退出，部分环境下会出现窗口关闭但安装器未继续
+    setImmediate(() => {
+      try {
+        autoUpdater.autoInstallOnAppQuit = true
+        autoUpdater.quitAndInstall(false, true)
+      } catch (err: any) {
+        installRequested = false
+        sendStatus({ status: 'error', error: `立即更新失败: ${err?.message || String(err)}` })
+      }
+    })
   }
 }
 
