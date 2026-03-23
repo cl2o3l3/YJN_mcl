@@ -73,6 +73,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   const localPort = ref(0)
   let hostLanReadyPending = false
   let hostLanReadyPeerId = ''
+  let hostLanActivatedPeerId = ''
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -126,6 +127,24 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     // 限制日志条数
     if (logs.value.length > 500) {
       logs.value = logs.value.slice(-300)
+    }
+  }
+
+  async function activateClientLan(peerId: string, logMessage = '房主已开启 MC 局域网') {
+    if (hostLanActivatedPeerId === peerId && localPort.value > 0) return
+
+    if (localPort.value > 0) {
+      hostLanActivatedPeerId = peerId
+      addLog(logMessage)
+      await window.api.p2p.startLanBroadcast(peerId, localPort.value, '共享世界')
+      addLog('MC 多人游戏列表中已自动显示服务器')
+      if (currentGameDir) {
+        await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+      }
+    } else {
+      hostLanReadyPending = true
+      hostLanReadyPeerId = peerId
+      addLog(`${logMessage}（等待本地代理就绪...）`)
     }
   }
 
@@ -457,11 +476,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
         if (hostLanReadyPending && localPort.value > 0) {
           hostLanReadyPending = false
-          await window.api.p2p.startLanBroadcast(hostLanReadyPeerId || peerId, localPort.value, '共享世界')
-          addLog('MC 多人游戏列表中已自动显示服务器')
-          if (currentGameDir) {
-            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
-          }
+          await activateClientLan(hostLanReadyPeerId || peerId)
+        }
+
+        // 兜底: 如果从信令已知主机正在托管 LAN，则不必只依赖单次 __MC_LAN_READY 消息
+        if (hostInfo.value?.peerId === peerId && (hostInfo.value.mcPort || 0) > 0) {
+          await activateClientLan(peerId, '根据房间状态检测到主机已开启 MC 局域网')
         }
 
         webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__CLIENT_READY'))
@@ -518,18 +538,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
 
       if (text === '__MC_LAN_READY' && myRole.value === 'client') {
-        addLog('房主已开启 MC 局域网')
-        if (localPort.value > 0) {
-          await window.api.p2p.startLanBroadcast(_peerId, localPort.value, '共享世界')
-          addLog('MC 多人游戏列表中已自动显示服务器')
-          if (currentGameDir) {
-            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
-          }
-        } else {
-          hostLanReadyPending = true
-          hostLanReadyPeerId = _peerId
-          addLog('房主已开启 MC 局域网（等待本地代理就绪...）')
-        }
+        await activateClientLan(_peerId)
         return
       }
 
@@ -723,6 +732,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       localPort.value = 0
       hostLanReadyPending = false
       hostLanReadyPeerId = ''
+      hostLanActivatedPeerId = ''
       preDistributedSave = false
       cachedPackedSave = null
       currentGameDir = ''
@@ -771,6 +781,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     localPort.value = 0
     hostLanReadyPending = false
     hostLanReadyPeerId = ''
+    hostLanActivatedPeerId = ''
     preDistributedSave = false
     cachedPackedSave = null
     currentGameDir = ''
