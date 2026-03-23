@@ -23,6 +23,13 @@ function safe<T>(fn: (...args: any[]) => T): (...args: any[]) => Promise<Awaited
 export function registerP2pHandlers() {
   // ========== TCP 代理 ==========
 
+  function forwardProxyError(id: string, err: string) {
+    const wins = BrowserWindow.getAllWindows()
+    for (const win of wins) {
+      win.webContents.send('p2p:proxyError', id, err)
+    }
+  }
+
   ipcMain.handle('p2p:startHostProxy', safe(async (_, proxyId: string, mcLanPort: number) => {
     const proxy = createHostProxy(proxyId, mcLanPort)
 
@@ -45,6 +52,10 @@ export function registerP2pHandlers() {
       for (const win of wins) {
         win.webContents.send('p2p:mcDisconnected', id)
       }
+    })
+
+    proxy.on('error', (id: string, err: string) => {
+      forwardProxyError(id, err)
     })
 
     proxy.start()
@@ -75,6 +86,10 @@ export function registerP2pHandlers() {
         for (const win of wins) {
           win.webContents.send('p2p:mcDisconnected', id)
         }
+      })
+
+      proxy.on('error', (id: string, err: string) => {
+        forwardProxyError(id, err)
       })
     }
 
