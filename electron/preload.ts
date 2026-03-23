@@ -321,6 +321,13 @@ const api = {
       ipcRenderer.invoke('save:unpackBuffer', data, gameDir, worldName) as Promise<void>,
   },
 
+  snapshot: {
+    upload: (serverUrl: string, uploadPath: string, archivePath: string) =>
+      ipcRenderer.invoke('snapshot:upload', serverUrl, uploadPath, archivePath) as Promise<void>,
+    downloadBuffer: (serverUrl: string, downloadPath: string) =>
+      ipcRenderer.invoke('snapshot:downloadBuffer', serverUrl, downloadPath) as Promise<ArrayBuffer>,
+  },
+
   // ========== 自动重连提示 (Plan C) ==========
   reconnect: {
     writeHint: (gameDir: string, host: string, port: number) =>

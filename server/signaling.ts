@@ -1,6 +1,10 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import * as http from 'http'
 import * as https from 'https'
+import * as fs from 'node:fs'
+import * as fsp from 'node:fs/promises'
+import * as path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import * as dotenv from 'dotenv'
 
 dotenv.config()
@@ -16,7 +20,10 @@ const HEARTBEAT_TIMEOUT = 60_000
 const RELAY_RATE_LIMIT = 1_048_576 // 1MB/s per room
 const ROOM_CODE_LENGTH = 6
 const SERVER_START_TIME = Date.now()
-const PERSISTENT_ROOM_TTL = 24 * 60 * 60 * 1000 // 24h
+const PERSISTENT_ROOM_TTL = 7 * 24 * 60 * 60 * 1000 // 7d
+const SNAPSHOT_TTL = 7 * 24 * 60 * 60 * 1000 // 7d
+const SNAPSHOT_UPLOAD_TOKEN_TTL = 10 * 60 * 1000 // 10 min
+const SNAPSHOT_BASE_DIR = path.join(process.cwd(), '.snapshot-store')
 
 // ========== 类型 ==========
 
@@ -38,6 +45,7 @@ interface Room {
   // 持久房间支持
   type: 'temporary' | 'persistent'
   currentHostId: string | null    // 共享世界的当前 MC 服务器主机
+  currentHostPort?: number | null
   worldMeta?: {                   // 共享世界元数据
     worldName: string
     mcVersion: string
@@ -46,7 +54,42 @@ interface Room {
       version: string
     }
   }
+  latestSnapshot?: RoomSnapshot
   emptyAt?: number                // 房间变空的时间戳 (TTL 起算点)
+}
+
+interface RoomSnapshot {
+  snapshotId: string
+  generation: number
+  worldName: string
+  mcVersion: string
+  modLoader?: {
+    type: string
+    version: string
+  }
+  sha1: string
+  size: number
+  uploadedAt: number
+  expiresAt: number
+  filePath: string
+}
+
+interface PendingSnapshotUpload {
+  snapshotId: string
+  token: string
+  roomId: string
+  peerId: string
+  generation: number
+  worldName: string
+  mcVersion: string
+  modLoader?: {
+    type: string
+    version: string
+  }
+  sha1: string
+  size: number
+  expiresAt: number
+  filePath: string
 }
 
 // ========== 状态 ==========
@@ -54,6 +97,8 @@ interface Room {
 const peers = new Map<string, Peer>()
 const rooms = new Map<string, Room>()
 const codeToRoom = new Map<string, string>()
+const snapshots = new Map<string, RoomSnapshot>()
+const pendingSnapshotUploads = new Map<string, PendingSnapshotUpload>()
 
 // ========== 工具函数 ==========
 
@@ -82,6 +127,69 @@ function broadcastToRoom(room: Room, msg: Record<string, unknown>, excludeId?: s
       sendTo(peer.ws, msg)
     }
   }
+}
+
+function publicSnapshot(snapshot: RoomSnapshot) {
+  return {
+    snapshotId: snapshot.snapshotId,
+    generation: snapshot.generation,
+    worldName: snapshot.worldName,
+    mcVersion: snapshot.mcVersion,
+    modLoader: snapshot.modLoader,
+    sha1: snapshot.sha1,
+    size: snapshot.size,
+    uploadedAt: snapshot.uploadedAt,
+    expiresAt: snapshot.expiresAt,
+    downloadPath: `/snapshot/download/${snapshot.snapshotId}`,
+  }
+}
+
+async function deleteSnapshot(snapshot?: RoomSnapshot) {
+  if (!snapshot) return
+  snapshots.delete(snapshot.snapshotId)
+  try {
+    await fsp.rm(snapshot.filePath, { force: true })
+  } catch { /* ignore */ }
+}
+
+async function handleSnapshotUpload(req: http.IncomingMessage, res: http.ServerResponse, url: URL, snapshotId: string) {
+  const pending = pendingSnapshotUploads.get(snapshotId)
+  const token = url.searchParams.get('token') || ''
+  if (!pending || pending.token !== token || pending.expiresAt < Date.now()) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'invalid or expired upload token' }))
+    return
+  }
+
+  await fsp.mkdir(path.dirname(pending.filePath), { recursive: true })
+
+  try {
+    await pipeline(req, fs.createWriteStream(pending.filePath))
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+  } catch (error: any) {
+    try { await fsp.rm(pending.filePath, { force: true }) } catch { /* ignore */ }
+    res.writeHead(500, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: error?.message || 'upload failed' }))
+  }
+}
+
+async function handleSnapshotDownload(res: http.ServerResponse, snapshotId: string) {
+  const snapshot = snapshots.get(snapshotId)
+  if (!snapshot || snapshot.expiresAt < Date.now() || !fs.existsSync(snapshot.filePath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'snapshot not found' }))
+    return
+  }
+
+  const stat = await fsp.stat(snapshot.filePath)
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(stat.size),
+    'Cache-Control': 'no-store',
+    'Content-Disposition': `attachment; filename="${snapshot.worldName}-${snapshot.generation}.tar.gz"`,
+  })
+  fs.createReadStream(snapshot.filePath).pipe(res)
 }
 
 // ========== Cloudflare TURN 凭据代理 (带缓存) ==========
@@ -181,6 +289,7 @@ function handleMessage(peer: Peer, raw: string) {
         relayResetTime: Date.now(),
         type: 'temporary',
         currentHostId: null,
+        currentHostPort: null,
       }
 
       rooms.set(roomId, room)
@@ -216,6 +325,7 @@ function handleMessage(peer: Peer, raw: string) {
       peer.name = String(msg.playerName || 'Player')
       peer.roomId = roomId
       room.peers.set(peer.id, peer)
+      room.emptyAt = undefined
 
       // 通知新成员已有 peers
       const existingPeers = Array.from(room.peers.values())
@@ -249,6 +359,7 @@ function handleMessage(peer: Peer, raw: string) {
       peer.name = String(msg.playerName || 'Player')
       peer.roomId = rejoinRoomId
       rejoinRoom.peers.set(peer.id, peer)
+      rejoinRoom.emptyAt = undefined
 
       const existingPeers = Array.from(rejoinRoom.peers.values())
         .filter(p => p.id !== peer.id)
@@ -360,6 +471,7 @@ function handleMessage(peer: Peer, raw: string) {
         relayResetTime: Date.now(),
         type: 'persistent',
         currentHostId: null,
+        currentHostPort: null,
         worldMeta: msg.worldMeta ? {
           worldName: String((msg.worldMeta as any).worldName || ''),
           mcVersion: String((msg.worldMeta as any).mcVersion || ''),
@@ -370,6 +482,7 @@ function handleMessage(peer: Peer, raw: string) {
               }
             : undefined,
         } : undefined,
+        latestSnapshot: undefined,
       }
 
       rooms.set(roomId, room)
@@ -398,6 +511,7 @@ function handleMessage(peer: Peer, raw: string) {
 
       room.currentHostId = peer.id
       const mcPort = Number(msg.mcPort) || 0
+      room.currentHostPort = mcPort
       sendTo(peer.ws, { type: 'host-registered', mcPort })
       broadcastToRoom(room, {
         type: 'host-changed',
@@ -416,6 +530,7 @@ function handleMessage(peer: Peer, raw: string) {
       if (room.currentHostId !== peer.id) return
 
       room.currentHostId = null
+      room.currentHostPort = null
       broadcastToRoom(room, { type: 'host-changed', hostId: null, reason: 'unregistered' })
       console.log(`[Room] ${peer.name} unregistered as host in ${room.code}`)
       break
@@ -430,13 +545,135 @@ function handleMessage(peer: Peer, raw: string) {
         const hostPeer = room.peers.get(room.currentHostId)
         sendTo(peer.ws, {
           type: 'host-info',
+          host: {
+            peerId: room.currentHostId,
+            peerName: hostPeer?.name || 'Unknown',
+            mcPort: room.currentHostPort || undefined,
+          },
           hostId: room.currentHostId,
           hostName: hostPeer?.name || 'Unknown',
+          mcPort: room.currentHostPort || undefined,
           worldMeta: room.worldMeta,
+          snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
         })
       } else {
-        sendTo(peer.ws, { type: 'host-info', hostId: null, worldMeta: room.worldMeta })
+        sendTo(peer.ws, {
+          type: 'host-info',
+          hostId: null,
+          worldMeta: room.worldMeta,
+          snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
+        })
       }
+      break
+    }
+
+    case 'request-snapshot-upload': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room || room.type !== 'persistent') { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+      if (room.currentHostId !== peer.id) { sendTo(peer.ws, { type: 'error', message: '只有当前主机可以上传快照' }); return }
+
+      const worldName = String(msg.worldName || room.worldMeta?.worldName || 'shared-world')
+      const mcVersion = String(msg.mcVersion || room.worldMeta?.mcVersion || '')
+      const size = Number(msg.size) || 0
+      const sha1 = String(msg.sha1 || '')
+      const modLoader = (msg as any).modLoader?.type && (msg as any).modLoader?.version
+        ? {
+            type: String((msg as any).modLoader.type),
+            version: String((msg as any).modLoader.version),
+          }
+        : undefined
+
+      const generation = (room.latestSnapshot?.generation || 0) + 1
+      const snapshotId = generateId()
+      const token = generateId() + generateId()
+      const expiresAt = Date.now() + SNAPSHOT_UPLOAD_TOKEN_TTL
+      const filePath = path.join(SNAPSHOT_BASE_DIR, `${snapshotId}.tar.gz`)
+
+      pendingSnapshotUploads.set(snapshotId, {
+        snapshotId,
+        token,
+        roomId: room.id,
+        peerId: peer.id,
+        generation,
+        worldName,
+        mcVersion,
+        modLoader,
+        sha1,
+        size,
+        expiresAt,
+        filePath,
+      })
+
+      sendTo(peer.ws, {
+        type: 'snapshot-upload-ready',
+        snapshotId,
+        generation,
+        uploadPath: `/snapshot/upload/${snapshotId}?token=${token}`,
+        expiresAt,
+      })
+      break
+    }
+
+    case 'commit-snapshot-upload': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room || room.type !== 'persistent') { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+
+      const snapshotId = String(msg.snapshotId || '')
+      const pending = pendingSnapshotUploads.get(snapshotId)
+      if (!pending || pending.peerId !== peer.id || pending.roomId !== room.id) {
+        sendTo(peer.ws, { type: 'error', message: '快照上传不存在或已失效' })
+        return
+      }
+
+      if (!fs.existsSync(pending.filePath)) {
+        sendTo(peer.ws, { type: 'error', message: '快照文件尚未上传完成' })
+        return
+      }
+
+      const uploadedAt = Date.now()
+      const snapshot: RoomSnapshot = {
+        snapshotId,
+        generation: pending.generation,
+        worldName: pending.worldName,
+        mcVersion: pending.mcVersion,
+        modLoader: pending.modLoader,
+        sha1: pending.sha1,
+        size: pending.size,
+        uploadedAt,
+        expiresAt: uploadedAt + SNAPSHOT_TTL,
+        filePath: pending.filePath,
+      }
+
+      const oldSnapshot = room.latestSnapshot
+      room.latestSnapshot = snapshot
+      room.worldMeta = {
+        worldName: snapshot.worldName,
+        mcVersion: snapshot.mcVersion,
+        modLoader: snapshot.modLoader,
+      }
+      snapshots.set(snapshot.snapshotId, snapshot)
+      pendingSnapshotUploads.delete(snapshotId)
+
+      if (oldSnapshot && oldSnapshot.snapshotId !== snapshot.snapshotId) {
+        void deleteSnapshot(oldSnapshot)
+      }
+
+      sendTo(peer.ws, { type: 'snapshot-stored', snapshot: publicSnapshot(snapshot) })
+      broadcastToRoom(room, { type: 'snapshot-updated', snapshot: publicSnapshot(snapshot) }, peer.id)
+      console.log(`[Snapshot] ${peer.name} stored snapshot ${snapshot.snapshotId} for room ${room.code}`)
+      break
+    }
+
+    case 'query-latest-snapshot': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room || room.type !== 'persistent') { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+      sendTo(peer.ws, {
+        type: 'snapshot-info',
+        snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
+      })
       break
     }
 
@@ -473,6 +710,7 @@ function removePeerFromRoom(peer: Peer) {
   // 如果这个 peer 是当前 MC 主机，广播主机变更
   if (room.currentHostId === peer.id) {
     room.currentHostId = null
+    room.currentHostPort = null
     broadcastToRoom(room, { type: 'host-changed', hostId: null, reason: 'disconnected' })
     console.log(`[Room] Host ${peer.name} disconnected from ${room.code}`)
   }
@@ -494,6 +732,7 @@ function removePeerFromRoom(peer: Peer) {
       for (const [, p] of room.peers) {
         p.roomId = null
       }
+      void deleteSnapshot(room.latestSnapshot)
       codeToRoom.delete(room.code)
       rooms.delete(room.id)
       console.log(`[Room] ${room.code} closed (host left)`)
@@ -501,6 +740,7 @@ function removePeerFromRoom(peer: Peer) {
       broadcastToRoom(room, { type: 'peer-left', peerId: peer.id })
       console.log(`[Room] ${peer.name} left ${room.code}`)
       if (room.peers.size === 0) {
+        void deleteSnapshot(room.latestSnapshot)
         codeToRoom.delete(room.code)
         rooms.delete(room.id)
       }
@@ -511,6 +751,20 @@ function removePeerFromRoom(peer: Peer) {
 // ========== 服务器启动 ==========
 
 const server = http.createServer((req, res) => {
+  const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
+
+  if (req.method === 'PUT' && requestUrl.pathname.startsWith('/snapshot/upload/')) {
+    const snapshotId = requestUrl.pathname.split('/').pop() || ''
+    void handleSnapshotUpload(req, res, requestUrl, snapshotId)
+    return
+  }
+
+  if (req.method === 'GET' && requestUrl.pathname.startsWith('/snapshot/download/')) {
+    const snapshotId = requestUrl.pathname.split('/').pop() || ''
+    void handleSnapshotDownload(res, snapshotId)
+    return
+  }
+
   // 健康检查 + 状态
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -578,18 +832,34 @@ setInterval(() => {
 // 持久房间 TTL 清理 (每 10 分钟检查)
 setInterval(() => {
   const now = Date.now()
+
+  for (const [snapshotId, pending] of pendingSnapshotUploads) {
+    if (pending.expiresAt <= now) {
+      pendingSnapshotUploads.delete(snapshotId)
+      void fsp.rm(pending.filePath, { force: true }).catch(() => {})
+    }
+  }
+
   for (const [roomId, room] of rooms) {
+    if (room.latestSnapshot && room.latestSnapshot.expiresAt <= now) {
+      const expiredSnapshot = room.latestSnapshot
+      room.latestSnapshot = undefined
+      void deleteSnapshot(expiredSnapshot)
+    }
+
     if (room.type === 'persistent' && room.peers.size === 0 && room.emptyAt) {
       if (now - room.emptyAt > PERSISTENT_ROOM_TTL) {
+        void deleteSnapshot(room.latestSnapshot)
         codeToRoom.delete(room.code)
         rooms.delete(roomId)
-        console.log(`[Room] Persistent room ${room.code} expired (24h TTL)`)
+        console.log(`[Room] Persistent room ${room.code} expired (7d TTL)`)
       }
     }
   }
 }, 10 * 60 * 1000)
 
 server.listen(PORT, () => {
+  void fsp.mkdir(SNAPSHOT_BASE_DIR, { recursive: true }).catch(() => {})
   console.log(`[Signaling] Server running on port ${PORT}`)
   console.log(`[Signaling] CF TURN: ${CF_TURN_KEY_ID ? 'configured' : 'not configured'}`)
   console.log(`[Signaling] Rooms: 0 | Peers: 0`)

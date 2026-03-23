@@ -264,6 +264,24 @@ export class SignalingClient {
     this.sendChecked({ type: 'register-host', mcPort })
   }
 
+  requestSnapshotUpload(payload: {
+    worldName: string
+    mcVersion: string
+    modLoader?: { type: string; version: string }
+    size: number
+    sha1: string
+  }): void {
+    this.sendChecked({ type: 'request-snapshot-upload', ...payload })
+  }
+
+  commitSnapshotUpload(snapshotId: string): void {
+    this.sendChecked({ type: 'commit-snapshot-upload', snapshotId })
+  }
+
+  queryLatestSnapshot(): void {
+    this.send({ type: 'query-latest-snapshot' })
+  }
+
   unregisterHost(): void {
     this.send({ type: 'unregister-host' })
   }

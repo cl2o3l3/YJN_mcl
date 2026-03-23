@@ -25,10 +25,24 @@ export interface SharedWorld {
   createdAt: number
 }
 
+interface SharedWorldSnapshot {
+  snapshotId: string
+  generation: number
+  worldName: string
+  mcVersion: string
+  modLoader?: ModLoaderInfo
+  sha1: string
+  size: number
+  uploadedAt: number
+  expiresAt: number
+  downloadPath: string
+}
+
 // ========== Store ==========
 
 export const useSharedWorldStore = defineStore('shared-world', () => {
   const settings = useSettingsStore()
+  const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000
 
   // 已加入的共享世界列表
   const worlds = ref<SharedWorld[]>([])
@@ -56,6 +70,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
   // 房间码
   const roomCode = ref('')
+  const latestSnapshot = ref<SharedWorldSnapshot | null>(null)
 
   // 内部对象
   let signaling: SignalingClient | null = null
@@ -66,6 +81,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   let launchExitListenerSetup = false
   let preDistributedSave = false
   let cachedPackedSave: { archivePath: string; size: number; sha1: string; worldName: string } | null = null
+  let snapshotTimer: ReturnType<typeof setInterval> | null = null
+  let snapshotUploadInProgress = false
+  let snapshotRestoreInProgress = false
+  let lastRestoredSnapshotId = ''
 
   // P2P 状态
   const peers = ref<P2PPeer[]>([])
@@ -74,6 +93,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   let hostLanReadyPending = false
   let hostLanReadyPeerId = ''
   let hostLanActivatedPeerId = ''
+  let canRegisterAsHostFromLan = false
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -90,6 +110,239 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value === 'connected' || electionState.value === 'hosting'
   )
 
+  function upsertWorldInList(world: SharedWorld) {
+    const normalized: SharedWorld = {
+      roomCode: world.roomCode.trim().toUpperCase(),
+      worldName: world.worldName || '共享房间',
+      mcVersion: world.mcVersion || '',
+      modLoader: world.modLoader,
+      localSavePath: world.localSavePath,
+      lastSyncTime: world.lastSyncTime,
+      createdAt: world.createdAt || Date.now(),
+    }
+
+    const index = worlds.value.findIndex(w => w.roomCode === normalized.roomCode)
+    if (index >= 0) {
+      worlds.value[index] = {
+        ...worlds.value[index],
+        ...normalized,
+      }
+    } else {
+      worlds.value = [normalized, ...worlds.value]
+    }
+
+    persistWorlds()
+  }
+
+  async function runWithTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }
+
+  function normalizeSnapshot(snapshot: any): SharedWorldSnapshot | null {
+    if (!snapshot?.snapshotId || !snapshot?.downloadPath) return null
+    const modLoader = snapshot.modLoader?.type && snapshot.modLoader?.version && ['fabric', 'forge', 'neoforge', 'quilt'].includes(snapshot.modLoader.type)
+      ? { type: snapshot.modLoader.type as ModLoaderInfo['type'], version: String(snapshot.modLoader.version) }
+      : undefined
+
+    return {
+      snapshotId: String(snapshot.snapshotId),
+      generation: Number(snapshot.generation) || 0,
+      worldName: String(snapshot.worldName || currentWorld.value?.worldName || 'shared-world'),
+      mcVersion: String(snapshot.mcVersion || currentWorld.value?.mcVersion || ''),
+      modLoader,
+      sha1: String(snapshot.sha1 || ''),
+      size: Number(snapshot.size) || 0,
+      uploadedAt: Number(snapshot.uploadedAt) || Date.now(),
+      expiresAt: Number(snapshot.expiresAt) || Date.now(),
+      downloadPath: String(snapshot.downloadPath),
+    }
+  }
+
+  async function waitForSignalEvent(eventName: string, timeoutMs = 15000): Promise<any> {
+    const signalingClient = signaling
+    if (!signalingClient) throw new Error('信令尚未初始化')
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+
+      const cleanup = () => {
+        clearTimeout(timeout)
+        signalingClient.off(eventName, handler)
+        signalingClient.off('error', errorHandler)
+      }
+
+      const handler = (msg: any) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(msg)
+      }
+
+      const errorHandler = (msg: any) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(new Error(msg?.message || '信令错误'))
+      }
+
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(new Error(`等待 ${eventName} 超时`))
+      }, timeoutMs)
+
+      signalingClient.on(eventName, handler)
+      signalingClient.on('error', errorHandler)
+    })
+  }
+
+  function clearSnapshotSchedule() {
+    if (snapshotTimer) {
+      clearInterval(snapshotTimer)
+      snapshotTimer = null
+    }
+  }
+
+  function updateSnapshotSchedule() {
+    clearSnapshotSchedule()
+    if (myRole.value !== 'host' || !currentGameDir || !currentWorld.value || mcLanPort.value <= 0) return
+
+    snapshotTimer = setInterval(() => {
+      void syncLatestSnapshot('周期快照', true)
+    }, SNAPSHOT_INTERVAL_MS)
+  }
+
+  async function refreshLatestSnapshot(silent = false): Promise<SharedWorldSnapshot | null> {
+    if (!signaling) return null
+
+    try {
+      const snapshotInfoPromise = waitForSignalEvent('snapshot-info', 10000)
+      signaling.queryLatestSnapshot()
+      const result = await snapshotInfoPromise
+      latestSnapshot.value = normalizeSnapshot(result?.snapshot)
+      if (!silent && latestSnapshot.value) {
+        addLog(`检测到云端快照 #${latestSnapshot.value.generation}，时间 ${new Date(latestSnapshot.value.uploadedAt).toLocaleString()}`)
+      }
+      return latestSnapshot.value
+    } catch (e: any) {
+      if (!silent) addLog(`查询云端快照失败: ${e.message}`)
+      return null
+    }
+  }
+
+  async function syncLatestSnapshot(reason: string, forcePack = true, preparedPacked?: { archivePath: string; size: number; sha1: string; worldName: string }) {
+    if (!signaling || !isHost.value || !currentGameDir) return null
+    if (!currentWorld.value) return null
+    if (snapshotUploadInProgress) return latestSnapshot.value
+
+    snapshotUploadInProgress = true
+
+    try {
+      const packed = preparedPacked || await prepareLatestSaveArchive(forcePack)
+      addLog(`${reason}：正在上传完整存档快照...`)
+
+      const uploadReadyPromise = waitForSignalEvent('snapshot-upload-ready', 15000)
+      signaling.requestSnapshotUpload({
+        worldName: packed.worldName,
+        mcVersion: currentWorld.value.mcVersion || '',
+        modLoader: currentWorld.value.modLoader,
+        size: packed.size,
+        sha1: packed.sha1,
+      })
+      const uploadReady = await uploadReadyPromise
+
+      await window.api.snapshot.upload(settings.signalingServer, String(uploadReady.uploadPath || ''), packed.archivePath)
+
+      const storedPromise = waitForSignalEvent('snapshot-stored', 15000)
+      signaling.commitSnapshotUpload(String(uploadReady.snapshotId || ''))
+      const stored = await storedPromise
+
+      latestSnapshot.value = normalizeSnapshot(stored?.snapshot)
+      if (latestSnapshot.value && currentWorld.value) {
+        upsertWorldInList({
+          ...currentWorld.value,
+          roomCode: roomCode.value,
+          worldName: packed.worldName,
+          lastSyncTime: latestSnapshot.value.uploadedAt,
+        })
+        addLog(`${reason}：快照已上传 (#${latestSnapshot.value.generation})`)
+      } else {
+        addLog(`${reason}：快照已上传`)
+      }
+
+      return latestSnapshot.value
+    } catch (e: any) {
+      addLog(`${reason}失败: ${e.message}`)
+      return null
+    } finally {
+      snapshotUploadInProgress = false
+    }
+  }
+
+  async function restoreLatestSnapshotIfNeeded() {
+    if (snapshotRestoreInProgress || !latestSnapshot.value || !currentGameDir) return false
+    if (hostInfo.value?.peerId) return false
+    if (latestSnapshot.value.snapshotId === lastRestoredSnapshotId) return false
+
+    const worldName = latestSnapshot.value.worldName || currentWorld.value?.worldName || 'shared-world'
+
+    try {
+      const saves = await window.api.save.list(currentGameDir)
+      if (saves.some((save: any) => save.name === worldName)) {
+        canRegisterAsHostFromLan = true
+        return false
+      }
+    } catch { /* ignore */ }
+
+    snapshotRestoreInProgress = true
+
+    try {
+      addLog(`当前无主机，正在恢复云端快照 #${latestSnapshot.value.generation}...`)
+      const data = await window.api.snapshot.downloadBuffer(settings.signalingServer, latestSnapshot.value.downloadPath)
+      await window.api.save.unpackBuffer(data, currentGameDir, worldName)
+
+      currentWorld.value = {
+        roomCode: roomCode.value,
+        worldName,
+        mcVersion: latestSnapshot.value.mcVersion,
+        modLoader: latestSnapshot.value.modLoader,
+        lastSyncTime: latestSnapshot.value.uploadedAt,
+        createdAt: currentWorld.value?.createdAt || Date.now(),
+      }
+
+      if (election) {
+        election.setWorldMeta({
+          worldName,
+          mcVersion: latestSnapshot.value.mcVersion,
+          modLoader: latestSnapshot.value.modLoader,
+        })
+      }
+
+      lastRestoredSnapshotId = latestSnapshot.value.snapshotId
+      canRegisterAsHostFromLan = true
+      addLog(`✓ 已恢复云端快照到 ${currentGameDir}/saves/${worldName}`)
+      addLog('请在 MC 中加载该存档并开启「对局域网开放」以成为新主机')
+      return true
+    } catch (e: any) {
+      addLog(`恢复云端快照失败: ${e.message}`)
+      return false
+    } finally {
+      snapshotRestoreInProgress = false
+    }
+  }
+
   // 当 currentWorld 变化时，同步 worldMeta 到 election + 广播给所有 peer
   watch(currentWorld, (world) => {
     if (world && election) {
@@ -101,6 +354,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
     if (world && myRole.value === 'host' && webrtcManager) {
       broadcastWorldMeta(world)
+    }
+    if (world?.roomCode) {
+      upsertWorldInList(world)
     }
   })
 
@@ -134,6 +390,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     if (hostLanActivatedPeerId === peerId && localPort.value > 0) return
 
     if (localPort.value > 0) {
+      if (hostLanActivatedPeerId && hostLanActivatedPeerId !== peerId) {
+        await window.api.p2p.stopLanBroadcast(hostLanActivatedPeerId).catch(() => {})
+      }
       hostLanActivatedPeerId = peerId
       addLog(logMessage)
       await window.api.p2p.startLanBroadcast(peerId, localPort.value, '共享世界')
@@ -148,7 +407,28 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
-  async function prepareLatestSaveArchive() {
+  async function clearClientLanState(peerId?: string, resetLocalPort = false) {
+    hostLanReadyPending = false
+    hostLanReadyPeerId = ''
+
+    if (hostLanActivatedPeerId) {
+      await window.api.p2p.stopLanBroadcast(hostLanActivatedPeerId).catch(() => {})
+      hostLanActivatedPeerId = ''
+    }
+
+    if (peerId) {
+      await window.api.p2p.destroyProxy(peerId).catch(() => {})
+    }
+
+    if (resetLocalPort) {
+      localPort.value = 0
+    }
+  }
+
+  async function prepareLatestSaveArchive(force = false) {
+    if (force) {
+      cachedPackedSave = null
+    }
     if (cachedPackedSave) return cachedPackedSave
     if (!currentGameDir) throw new Error('未设置游戏目录')
 
@@ -178,7 +458,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     return cachedPackedSave
   }
 
-  async function distributeSaveToAllPeersOnExit() {
+  async function distributeSaveToAllPeersOnExit(preparedPacked?: { archivePath: string; size: number; sha1: string; worldName: string }) {
     if (!webrtcManager || !isHost.value) return
 
     const connectedPeers = peers.value.filter(p => p.state === 'connected')
@@ -187,7 +467,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       return
     }
 
-    const packed = await prepareLatestSaveArchive()
+    const packed = preparedPacked || await prepareLatestSaveArchive()
     const fileData = await window.api.save.readArchive(packed.archivePath)
 
     addLog(`检测到游戏退出，正在向 ${connectedPeers.length} 位玩家广播存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
@@ -225,12 +505,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
     window.api.launch.onExit(async () => {
       if (!isActive.value || !isHost.value || leaveInProgress) return
-      addLog('检测到 MC 已退出，正在向房间内玩家发送存档并离开共享世界...')
-      try {
-        await distributeSaveToAllPeersOnExit()
-      } catch (e: any) {
-        addLog(`退出时广播存档失败: ${e.message}`)
-      }
+      addLog('检测到 MC 已退出，正在上传最终快照并离开共享世界...')
       await leaveWorld()
     })
   }
@@ -254,10 +529,19 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       const code = await election.createWorld(config.playerName)
       roomCode.value = code
+      canRegisterAsHostFromLan = true
+      upsertWorldInList({
+        roomCode: code,
+        worldName: currentWorld.value?.worldName || '共享房间',
+        mcVersion: currentWorld.value?.mcVersion || '',
+        modLoader: currentWorld.value?.modLoader,
+        createdAt: currentWorld.value?.createdAt || Date.now(),
+      })
       // 房主自己就是第一个成员
       roomMembers.value = [{ id: signaling!.peerId, name: config.playerName }]
 
       startP2PPipeline()
+      updateSnapshotSchedule()
 
       addLog(`✓ 房间已创建，房间码: ${code}`)
       return code
@@ -289,6 +573,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       await election.joinWorld(config.roomCode, config.playerName)
       myRole.value = election.getRole()
+      canRegisterAsHostFromLan = false
 
       // 从 election 获取已有成员列表 (room-joined.peers) + 自己
       const existingPeers = election.getRoomPeers?.() || []
@@ -309,7 +594,17 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           modLoader: meta.modLoader,
           createdAt: Date.now(),
         }
+      } else {
+        upsertWorldInList({
+          roomCode: config.roomCode,
+          worldName: '共享房间',
+          mcVersion: '',
+          createdAt: Date.now(),
+        })
       }
+
+      await refreshLatestSnapshot(true)
+      void restoreLatestSnapshotIfNeeded()
 
       addLog(`✓ 已加入房间 (${config.roomCode})`)
     } catch (e: any) {
@@ -325,7 +620,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
    */
   function setGameDir(gameDir: string) {
     currentGameDir = gameDir
+    cachedPackedSave = null
     addLog(`已设置游戏目录: ${gameDir}`)
+    updateSnapshotSchedule()
+    void restoreLatestSnapshotIfNeeded()
   }
 
   /**
@@ -335,18 +633,30 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     return {
       onStateChange: (state: ElectionState) => { electionState.value = state },
       onHostChange: (host: HostInfo | null) => {
+        const previousHostPeerId = hostInfo.value?.peerId
+        const previousRole = myRole.value
         hostInfo.value = host
         if (election) myRole.value = election.getRole()
+        if (previousRole === 'client' && myRole.value === 'host') {
+          void clearClientLanState(previousHostPeerId, true)
+        }
+        if (host?.peerId && host.peerId !== myPeerId.value) {
+          canRegisterAsHostFromLan = false
+        }
+        if (!host?.peerId) {
+          void refreshLatestSnapshot(true).then(() => restoreLatestSnapshotIfNeeded())
+        }
+        updateSnapshotSchedule()
       },
       onNeedTransferHost: async (_suggestedName: string) => {
-        return prepareLatestSaveArchive()
+        return prepareLatestSaveArchive(true)
       },
       onNeedReceiveSave: async (archivePath: string, sha1: string, worldName: string) => {
         addLog(`正在解包存档 ${worldName}...`)
         if (!currentGameDir) throw new Error('未设置游戏目录')
         const targetDir = `${currentGameDir}/saves/${worldName}`
         await window.api.save.unpack(archivePath, targetDir, sha1)
-        addLog('✓ 存档已解包')
+        addLog(`✓ 存档已解包到 ${targetDir}`)
       },
       onTransferProgress: (progress: TransferProgress) => {
         transferProgress.value = progress
@@ -387,7 +697,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         if (!currentGameDir) return false
         try {
           const saves = await window.api.save.list(currentGameDir)
-          return saves.some((s: any) => s.name === worldName)
+          const matched = saves.some((s: any) => s.name === worldName)
+          if (matched) canRegisterAsHostFromLan = true
+          return matched
         } catch {
           return false
         }
@@ -403,8 +715,43 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     leaveInProgress = true
 
     try {
+      addLog(isHost.value ? '正在移交主机并离开共享世界...' : '正在离开共享世界...')
+
+      if (isHost.value && currentGameDir) {
+        let packed: { archivePath: string; size: number; sha1: string; worldName: string } | null = null
+
+        try {
+          packed = await prepareLatestSaveArchive(true)
+          await runWithTimeout(
+            syncLatestSnapshot('退出快照', false, packed),
+            30000,
+            '退出快照上传超时'
+          )
+        } catch (e: any) {
+          addLog(`退出快照上传失败: ${e.message}`)
+        }
+
+        try {
+          await runWithTimeout(
+            distributeSaveToAllPeersOnExit(packed || undefined),
+            15000,
+            '离开前广播存档超时'
+          )
+        } catch (e: any) {
+          addLog(`离开房间前广播存档失败: ${e.message}`)
+        }
+      }
+
       if (election) {
-        await election.leaveWorld()
+        try {
+          await runWithTimeout(
+            election.leaveWorld(),
+            15000,
+            '离开房间流程超时'
+          )
+        } catch (e: any) {
+          addLog(`离开流程超时，执行本地清理: ${e.message}`)
+        }
         election.destroy()
         election = null
       }
@@ -564,11 +911,35 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     signaling.on('peer-joined', onPeerJoined)
     cleanupFns.push(() => signaling?.off('peer-joined', onPeerJoined))
 
+    const onSnapshotUpdated = (msg: any) => {
+      const snapshot = normalizeSnapshot(msg?.snapshot)
+      if (!snapshot) return
+      latestSnapshot.value = snapshot
+      if (currentWorld.value) {
+        upsertWorldInList({
+          ...currentWorld.value,
+          roomCode: roomCode.value,
+          worldName: snapshot.worldName,
+          mcVersion: snapshot.mcVersion,
+          modLoader: snapshot.modLoader,
+          lastSyncTime: snapshot.uploadedAt,
+        })
+      }
+      if (!hostInfo.value?.peerId) {
+        void restoreLatestSnapshotIfNeeded()
+      }
+    }
+    signaling.on('snapshot-updated', onSnapshotUpdated)
+    cleanupFns.push(() => signaling?.off('snapshot-updated', onSnapshotUpdated))
+
     const onPeerLeft = (msg: any) => {
       addLog('玩家离开')
       roomMembers.value = roomMembers.value.filter(m => m.id !== msg.peerId)
       webrtcManager?.disconnectPeer(msg.peerId)
       window.api.p2p.destroyProxy(msg.peerId)
+      if (myRole.value === 'client' && (msg.peerId === hostLanActivatedPeerId || msg.peerId === hostLanReadyPeerId || msg.peerId === hostInfo.value?.peerId)) {
+        void clearClientLanState(msg.peerId, true)
+      }
     }
     signaling.on('peer-left', onPeerLeft)
     cleanupFns.push(() => signaling?.off('peer-left', onPeerLeft))
@@ -579,6 +950,14 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       if (games.length === 0) return
       const port = games[0].port
       if (mcLanPort.value === port) return
+      if (myRole.value !== 'host' && localPort.value > 0 && hostLanActivatedPeerId && port === localPort.value) return
+
+      const isAlreadyHostedByOther = !!hostInfo.value?.peerId && hostInfo.value.peerId !== myPeerId.value
+      const canAttemptHostRegistration = myRole.value === 'host' || (!isAlreadyHostedByOther && canRegisterAsHostFromLan)
+
+      if (!canAttemptHostRegistration) {
+        return
+      }
 
       mcLanPort.value = port
       addLog(`检测到 MC LAN 端口: ${port}`)
@@ -590,6 +969,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
             await election.becomeHost(port)
             myRole.value = election.getRole()
             if (myRole.value === 'host') {
+              canRegisterAsHostFromLan = false
+              updateSnapshotSchedule()
               // 为已连接的 peer 启动代理
               for (const p of peers.value) {
                 if (p.state === 'connected') {
@@ -660,6 +1041,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
     )
 
+    addLog('已准备接收主机发送的存档')
+
     receiver.listen(pc).then(async ({ data, worldName: receivedWorldName }) => {
       addLog('✓ 存档接收完成，正在解包...')
       if (!currentGameDir) {
@@ -669,7 +1052,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       const worldName = receivedWorldName || currentWorld.value?.worldName || 'shared-world'
       try {
         await window.api.save.unpackBuffer(data, currentGameDir, worldName)
-        addLog(`✓ 存档已解包到 saves/${worldName}`)
+        addLog(`✓ 存档已解包到 ${currentGameDir}/saves/${worldName}`)
         // 更新 worldMeta 以便 tryAutoElection 能找到这个存档
         if (election) election.setWorldMeta({
           worldName,
@@ -719,9 +1102,11 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       election = null
       signaling?.disconnect()
       signaling = null
+      clearSnapshotSchedule()
       electionState.value = 'idle'
       hostInfo.value = null
       myRole.value = null
+      latestSnapshot.value = null
       transferProgress.value = null
       currentWorld.value = null
       roomCode.value = ''
@@ -733,8 +1118,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       hostLanReadyPending = false
       hostLanReadyPeerId = ''
       hostLanActivatedPeerId = ''
+      canRegisterAsHostFromLan = false
       preDistributedSave = false
       cachedPackedSave = null
+      lastRestoredSnapshotId = ''
       currentGameDir = ''
       if (resetLogs) {
         logs.value = []
@@ -759,7 +1146,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     try {
       const data = localStorage.getItem('shared-worlds')
       if (data) {
-        worlds.value = JSON.parse(data)
+        const parsed = JSON.parse(data)
+        if (Array.isArray(parsed)) {
+          worlds.value = parsed
+        }
       }
     } catch { /* ignore */ }
   }
@@ -770,6 +1160,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value = 'idle'
     hostInfo.value = null
     myRole.value = null
+    latestSnapshot.value = null
     transferProgress.value = null
     currentWorld.value = null
     roomCode.value = ''
@@ -782,9 +1173,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     hostLanReadyPending = false
     hostLanReadyPeerId = ''
     hostLanActivatedPeerId = ''
+    canRegisterAsHostFromLan = false
     preDistributedSave = false
     cachedPackedSave = null
+    lastRestoredSnapshotId = ''
     currentGameDir = ''
+    clearSnapshotSchedule()
   }
 
   // 初始加载
@@ -797,6 +1191,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState,
     hostInfo,
     myRole,
+    latestSnapshot,
     transferProgress,
     logs,
     error,

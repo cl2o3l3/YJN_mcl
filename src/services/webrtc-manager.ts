@@ -31,6 +31,7 @@ type EventHandler = (...args: any[]) => void
 
 export class WebRTCManager {
   private peers = new Map<string, ManagedPeer>()
+  private connectionAttempts = new Map<string, number>()
   private signaling: SignalingClient
   private config: WebRTCManagerConfig
   private listeners = new Map<string, Set<EventHandler>>()
@@ -59,8 +60,16 @@ export class WebRTCManager {
 
   /** 与新 peer 建立连接 */
   async connectToPeer(peerId: string, peerName: string, isInitiator: boolean): Promise<void> {
-    // 如果已有连接先清理
+    const existing = this.peers.get(peerId)
+    if (existing && (existing.state === 'connecting' || existing.state === 'connected')) {
+      return
+    }
+
+    // 如果已有旧连接先清理
     this.disconnectPeer(peerId)
+
+    const attemptId = (this.connectionAttempts.get(peerId) ?? 0) + 1
+    this.connectionAttempts.set(peerId, attemptId)
 
     const managed: ManagedPeer = {
       peerId,
@@ -87,6 +96,12 @@ export class WebRTCManager {
       )
 
       managed.connection = conn
+
+      if (this.connectionAttempts.get(peerId) !== attemptId || this.peers.get(peerId) !== managed) {
+        conn.close()
+        return
+      }
+
       managed.state = 'connected'
       managed.tier = conn.tier
 
@@ -106,6 +121,10 @@ export class WebRTCManager {
       this.emitPeerUpdate()
       this.emit('peer-connected', peerId)
     } catch (err) {
+      if (this.connectionAttempts.get(peerId) !== attemptId || this.peers.get(peerId) !== managed) {
+        return
+      }
+
       managed.state = 'disconnected'
       this.emitPeerUpdate()
       this.emit('peer-error', peerId, (err as Error).message)
@@ -132,6 +151,7 @@ export class WebRTCManager {
   /** 断开某个 peer */
   disconnectPeer(peerId: string): void {
     const managed = this.peers.get(peerId)
+    this.connectionAttempts.set(peerId, (this.connectionAttempts.get(peerId) ?? 0) + 1)
     if (!managed) return
 
     if (managed.rttInterval) clearInterval(managed.rttInterval)
@@ -209,6 +229,7 @@ export class WebRTCManager {
 
   destroy(): void {
     this.disconnectAll()
+    this.connectionAttempts.clear()
     this.listeners.clear()
   }
 }

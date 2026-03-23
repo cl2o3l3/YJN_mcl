@@ -131,11 +131,16 @@ export class HostElection {
 
     // 等待 host-info 响应
     const hostInfo = await hostInfoPromise as any
+    const normalizedHost = hostInfo.host
+      ? hostInfo.host
+      : hostInfo.hostId
+        ? { peerId: hostInfo.hostId, peerName: hostInfo.hostName || 'Unknown', mcPort: hostInfo.mcPort }
+        : null
 
-    if (hostInfo.host) {
+    if (normalizedHost) {
       // 有主机在线 → 作为客户端连接
-      this.events.onLog(`当前主机: ${hostInfo.host.peerName}，作为客户端加入`)
-      this.setHost(hostInfo.host)
+      this.events.onLog(`当前主机: ${normalizedHost.peerName}，作为客户端加入`)
+      this.setHost(normalizedHost)
       this.myRole = 'client'
       this.setState('connected')
     } else {

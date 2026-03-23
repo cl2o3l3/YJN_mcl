@@ -26,6 +26,7 @@ const notifsStore = useNotificationsStore()
 const joinCode = ref('')
 const showDiagModal = ref(false)
 const logContainer = ref<HTMLElement | null>(null)
+const swLogContainer = ref<HTMLElement | null>(null)
 const manualOfferInput = ref('')
 const manualAnswerInput = ref('')
 const modSyncLocalDiff = ref<{ missing: InstalledResource[]; extra: InstalledResource[]; matched: InstalledResource[] } | null>(null)
@@ -84,6 +85,12 @@ watch(() => mp.logs.length, () => {
   })
 })
 
+watch(() => sw.logs.length, () => {
+  nextTick(() => {
+    if (swLogContainer.value) swLogContainer.value.scrollTop = swLogContainer.value.scrollHeight
+  })
+})
+
 // 自动恢复 selectedMode（热更新 / 路由回来时 state 不是 idle 但 selectedMode 丢失）
 watch(() => mp.state, (s) => {
   if (s !== 'idle' && !selectedMode.value) {
@@ -107,6 +114,7 @@ onMounted(() => {
 const swJoinCode = ref('')
 const swJoining = ref(false)
 const swCreating = ref(false)
+const swLeaving = ref(false)
 const swTab = ref<'create' | 'join' | 'list'>('list')
 const swSelectedProfileId = ref('')  // 进入房间后选择的实例
 
@@ -123,6 +131,42 @@ function formatProfileLoader(profile?: GameProfile | null): string {
 const swSelectedProfile = computed(() =>
   profiles.profiles.find(profile => profile.id === swSelectedProfileId.value) || null
 )
+
+const swSaveTargetPath = computed(() => {
+  const profile = swSelectedProfile.value
+  if (!profile) return ''
+  const worldName = sw.currentWorld?.worldName || '接收到的存档'
+  return `${profile.gameDir}${profile.gameDir.endsWith('\\') ? '' : '\\'}saves\\${worldName}`
+})
+
+const swInstanceHint = computed(() => {
+  if (sw.isHost) {
+    if (!swSelectedProfile.value) {
+      return '选择一个实例并启动 MC，然后在游戏中开启「对局域网开放」。'
+    }
+    if (launch.isRunning && sw.mcLanPort > 0) {
+      return `已检测到局域网端口 ${sw.mcLanPort}，其他玩家现在可以从多人游戏列表加入。`
+    }
+    if (launch.isRunning) {
+      return '游戏已启动，请在 MC 中进入存档 → Esc → 对局域网开放 → 创建。'
+    }
+    return '选择的实例会作为共享世界运行目录。若开启版本隔离，存档会落在该实例目录下的 saves 中。'
+  }
+
+  if (sw.hostInfo?.mcPort && sw.localPort > 0) {
+    return `主机已开启局域网，服务器已自动显示在多人游戏列表。存档将写入 ${swSaveTargetPath.value || '所选实例的 saves 目录'}。`
+  }
+
+  if (sw.hostInfo?.mcPort) {
+    return '主机已开启局域网，正在准备本地代理，请稍候...'
+  }
+
+  if (sw.currentWorld?.mcVersion) {
+    return '主机使用的版本：' + sw.currentWorld.mcVersion + ' · ' + formatWorldLoader(sw.currentWorld.modLoader) + '，请选择匹配的实例。'
+  }
+
+  return '等待主机选择版本并开启局域网...'
+})
 
 async function handleCreateSharedWorld() {
   if (!auth.selectedAccount) return
@@ -147,30 +191,45 @@ async function handleJoinSharedWorld() {
   swJoining.value = false
 }
 
-async function handleLeaveSharedWorld() {
-  await sw.leaveWorld()
+async function handleLeaveSharedWorld(mode: 'leave' | 'transfer' = 'leave') {
+  if (swLeaving.value) return
+
+  swLeaving.value = true
+  sw.addLog(mode === 'transfer' ? '已请求移交主机并离开' : '已请求离开共享世界')
+
+  try {
+    await sw.leaveWorld()
+    swTab.value = 'list'
+    swSelectedProfileId.value = ''
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    notifsStore.push('error', `离开共享世界失败: ${msg}`)
+    sw.addLog(`离开共享世界失败: ${msg}`)
+  } finally {
+    swLeaving.value = false
+  }
 }
 
 function copySWCode() {
   if (sw.roomCode) navigator.clipboard.writeText(sw.roomCode)
 }
 
-watch(swSelectedProfileId, (profileId) => {
-  const profile = profiles.profiles.find(p => p.id === profileId)
-  if (profile) {
-    sw.setGameDir(profile.gameDir)
-    // 主机选择实例时更新版本信息，让客户端可以看到
-    if (sw.isHost) {
-      sw.currentWorld = {
-        roomCode: sw.roomCode,
-        worldName: profile.name,
-        mcVersion: profile.versionId,
-        modLoader: profile.modLoader || undefined,
-        createdAt: sw.currentWorld?.createdAt || Date.now(),
-      }
+watch(swSelectedProfile, (profile) => {
+  if (!profile) return
+
+  sw.setGameDir(profile.gameDir)
+
+  // 主机选择实例时更新版本信息，让客户端可以看到
+  if (sw.isHost) {
+    sw.currentWorld = {
+      roomCode: sw.roomCode,
+      worldName: profile.name,
+      mcVersion: profile.versionId,
+      modLoader: profile.modLoader || undefined,
+      createdAt: sw.currentWorld?.createdAt || Date.now(),
     }
   }
-})
+}, { immediate: true })
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -955,13 +1014,7 @@ function rttClass(rtt: number): string {
           <!-- 选择实例（进入房间后） -->
           <div class="card mt">
             <h3>选择实例</h3>
-            <p class="text-muted text-xs">
-              {{ sw.isHost
-                ? '选择一个实例并启动 MC，然后在游戏中开启「对局域网开放」。'
-                : sw.currentWorld?.mcVersion
-                  ? '主机使用的版本：' + sw.currentWorld.mcVersion + ' · ' + formatWorldLoader(sw.currentWorld.modLoader) + '，请选择匹配的实例。'
-                  : '等待主机选择版本并开启局域网...' }}
-            </p>
+            <p class="text-muted text-xs">{{ swInstanceHint }}</p>
             <div class="sw-form mt-sm">
               <select v-model="swSelectedProfileId" class="input" :disabled="profiles.profiles.length === 0">
                 <option value="">选择一个本地实例</option>
@@ -971,6 +1024,9 @@ function rttClass(rtt: number): string {
               </select>
               <p v-if="swSelectedProfile" class="text-muted text-xs">
                 实例目录：{{ swSelectedProfile.gameDir }}
+              </p>
+              <p v-if="swSelectedProfile" class="text-muted text-xs">
+                存档位置：{{ swSaveTargetPath }}
               </p>
               <button
                 v-if="swSelectedProfile"
@@ -1034,7 +1090,9 @@ function rttClass(rtt: number): string {
             <h3>主机控制</h3>
             <p class="text-muted text-xs">你的 MC 客户端正在托管局域网世界。退出游戏时会自动迁移主机。</p>
             <div class="sw-controls mt">
-              <button class="btn-secondary" @click="handleLeaveSharedWorld">🔄 移交房主并离开</button>
+              <button class="btn-secondary" @click="handleLeaveSharedWorld('transfer')" :disabled="swLeaving">
+                {{ swLeaving ? '处理中...' : '🔄 移交房主并离开' }}
+              </button>
             </div>
           </div>
 
@@ -1049,7 +1107,9 @@ function rttClass(rtt: number): string {
 
           <!-- 离开 -->
           <div class="mt room-actions">
-            <button class="btn-danger" @click="handleLeaveSharedWorld">离开世界</button>
+            <button class="btn-danger" @click="handleLeaveSharedWorld(sw.isHost ? 'transfer' : 'leave')" :disabled="swLeaving">
+              {{ swLeaving ? '离开中...' : '离开世界' }}
+            </button>
           </div>
         </div>
       </template>

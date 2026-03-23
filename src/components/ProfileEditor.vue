@@ -2,8 +2,9 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { useProfilesStore } from '../stores/profiles'
 import { useModloaderStore } from '../stores/modloader'
-import type { GameProfile, GCType, JvmArgs, ModLoaderType } from '../types'
+import type { GameProfile, GCType, JvmArgs, ModLoaderType, VersionIsolationMode } from '../types'
 import { GC_PRESETS } from '../types'
+import { useSettingsStore } from '../stores/settings'
 
 const props = defineProps<{
   profile: GameProfile | null  // null = 新建
@@ -16,11 +17,13 @@ const emit = defineEmits<{
 
 const profiles = useProfilesStore()
 const modloaderStore = useModloaderStore()
+const settings = useSettingsStore()
 
 // 表单数据
 const name = ref(props.profile?.name || '')
 const versionId = ref(props.profile?.versionId || '')
-const gameDir = ref(props.profile?.gameDir || '')
+const gameDir = ref(props.profile?.baseGameDir || props.profile?.gameDir || '')
+const versionIsolation = ref<VersionIsolationMode>(props.profile?.versionIsolation || 'inherit')
 const javaPath = ref(props.profile?.javaPath || '')
 const loaderType = ref<ModLoaderType | ''>(props.profile?.modLoader?.type || '')
 const loaderVersion = ref(props.profile?.modLoader?.version || '')
@@ -37,6 +40,20 @@ const newTag = ref('')
 const totalMemory = ref(0)
 const javas = ref<{ path: string; version: string; majorVersion: number }[]>([])
 const scanningJava = ref(false)
+
+const effectiveIsolationEnabled = computed(() => {
+  if (versionIsolation.value === 'enabled') return true
+  if (versionIsolation.value === 'disabled') return false
+  return settings.defaultVersionIsolation
+})
+
+const effectiveGameDirPreview = computed(() => {
+  if (!gameDir.value) return ''
+  if (!effectiveIsolationEnabled.value) return gameDir.value
+  const suffix = (props.profile?.id || 'new-instance').slice(0, 8)
+  const safeName = (name.value || 'instance').replace(/[<>:"/\\|?*]/g, '-').trim() || 'instance'
+  return `${gameDir.value}${gameDir.value.endsWith('\\') ? '' : '\\'}instances\\${safeName}-${suffix}`
+})
 
 // Mod Loader 版本列表的计算属性
 const loaderVersionOptions = computed(() => {
@@ -147,6 +164,8 @@ async function save() {
       name: name.value,
       versionId: versionId.value,
       gameDir: gameDir.value,
+      baseGameDir: gameDir.value,
+      versionIsolation: versionIsolation.value,
       javaPath: javaPath.value,
       jvmArgs,
       modLoader,
@@ -160,9 +179,15 @@ async function save() {
       name: name.value,
       versionId: versionId.value,
       gameDir: gameDir.value,
+      baseGameDir: gameDir.value,
+      versionIsolation: versionIsolation.value,
       javaPath: javaPath.value,
       jvmArgs,
-      modLoader
+      modLoader,
+      windowWidth: windowWidth.value,
+      windowHeight: windowHeight.value,
+      iconPath: iconPath.value || undefined,
+      tags: tags.value.length ? tags.value : undefined
     })
   }
 
@@ -223,7 +248,7 @@ async function save() {
       </div>
 
       <div class="form-group">
-        <label>游戏目录</label>
+        <label>游戏目录根目录</label>
         <div class="input-row">
           <input v-model="gameDir" readonly class="flex-input" />
           <button class="btn-secondary" @click="selectGameDir">浏览...</button>
@@ -231,10 +256,21 @@ async function save() {
       </div>
 
       <div class="form-group">
-        <label>Java 路径 <span class="text-hint">(留空自动检测)</span></label>
+        <label>版本隔离</label>
+        <select v-model="versionIsolation">
+          <option value="inherit">跟随全局默认</option>
+          <option value="enabled">开启</option>
+          <option value="disabled">关闭</option>
+        </select>
+        <div class="text-hint">当前生效：{{ effectiveIsolationEnabled ? '开启' : '关闭' }}</div>
+        <div class="text-hint">实例实际目录：{{ effectiveGameDirPreview || '未选择目录' }}</div>
+      </div>
+
+      <div class="form-group">
+        <label>启动 Java <span class="text-hint">(当前实例专用，留空则用全局默认/自动检测)</span></label>
         <div class="input-row">
           <select v-model="javaPath" class="flex-input">
-            <option value="">自动检测</option>
+            <option value="">跟随全局默认 / 自动检测</option>
             <option v-for="j in javas" :key="j.path" :value="j.path">
               Java {{ j.majorVersion }} ({{ j.version }}) - {{ j.path }}
             </option>

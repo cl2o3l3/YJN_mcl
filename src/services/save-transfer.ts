@@ -26,6 +26,7 @@ const SAVE_CHANNEL_LABEL = 'save-sync'
 export class SaveSender {
   private dc: RTCDataChannel | null = null
   private aborted = false
+  private settled = false
   private onProgress: ProgressCallback
   private onComplete: CompleteCallback
 
@@ -56,6 +57,20 @@ export class SaveSender {
       let chunkIndex = 0
       const startTime = Date.now()
 
+      const finishSuccess = () => {
+        if (this.settled) return
+        this.settled = true
+        this.onComplete(true)
+        resolve()
+      }
+
+      const finishError = (message: string, error: Error) => {
+        if (this.settled) return
+        this.settled = true
+        this.onComplete(false, message)
+        reject(error)
+      }
+
       dc.binaryType = 'arraybuffer'
       dc.bufferedAmountLowThreshold = CHUNK_SIZE * 4
 
@@ -75,7 +90,7 @@ export class SaveSender {
       const sendNextChunks = () => {
         if (this.aborted) {
           dc.close()
-          reject(new Error('传输已取消'))
+          finishError('传输已取消', new Error('传输已取消'))
           return
         }
 
@@ -115,26 +130,22 @@ export class SaveSender {
           } else if (msg.type === '__SAVE_VERIFY') {
             dc.close()
             if (msg.sha1Match) {
-              this.onComplete(true)
-              resolve()
+              finishSuccess()
             } else {
               const err = 'SHA1 校验失败'
-              this.onComplete(false, err)
-              reject(new Error(err))
+              finishError(err, new Error(err))
             }
           }
         } catch { /* binary chunk ack or non-json, ignore */ }
       }
 
       dc.onerror = (err) => {
-        this.onComplete(false, `DataChannel 错误: ${err}`)
-        reject(new Error(`DataChannel error`))
+        finishError(`DataChannel 错误: ${err}`, new Error('DataChannel error'))
       }
 
       dc.onclose = () => {
-        if (chunkIndex < totalChunks && !this.aborted) {
-          this.onComplete(false, '连接意外关闭')
-          reject(new Error('DataChannel closed prematurely'))
+        if (!this.settled && chunkIndex < totalChunks && !this.aborted) {
+          finishError('连接意外关闭', new Error('DataChannel closed prematurely'))
         }
       }
     })
@@ -142,6 +153,7 @@ export class SaveSender {
 
   abort(): void {
     this.aborted = true
+    this.settled = true
     this.dc?.close()
   }
 }
@@ -149,6 +161,7 @@ export class SaveSender {
 // ========== 接收端 ==========
 
 export class SaveReceiver {
+  private settled = false
   private onProgress: ProgressCallback
   private onComplete: CompleteCallback
 
@@ -176,6 +189,20 @@ export class SaveReceiver {
         let receivedBytes = 0
         const startTime = Date.now()
 
+        const finishSuccess = (payload: { data: ArrayBuffer; sha1: string; worldName: string }) => {
+          if (this.settled) return
+          this.settled = true
+          this.onComplete(true)
+          resolve(payload)
+        }
+
+        const finishError = (message: string, error: Error) => {
+          if (this.settled) return
+          this.settled = true
+          this.onComplete(false, message)
+          reject(error)
+        }
+
         dc.onmessage = (msgEvent) => {
           const data = msgEvent.data
 
@@ -191,6 +218,12 @@ export class SaveReceiver {
                   totalChunks: msg.totalChunks,
                   worldName: msg.worldName || 'shared-world',
                 }
+                this.onProgress({
+                  direction: 'download',
+                  current: 0,
+                  total: meta.totalSize,
+                  speed: 0,
+                })
                 // 确认收到 meta
                 dc.send(JSON.stringify({ type: '__SAVE_ACK' }))
                 return
@@ -213,11 +246,9 @@ export class SaveReceiver {
                   dc.send(JSON.stringify({ type: '__SAVE_VERIFY', sha1Match: match }))
 
                   if (match) {
-                    this.onComplete(true)
-                    resolve({ data: result.buffer, sha1: meta!.sha1, worldName: meta!.worldName })
+                    finishSuccess({ data: result.buffer, sha1: meta!.sha1, worldName: meta!.worldName })
                   } else {
-                    this.onComplete(false, 'SHA1 不匹配')
-                    reject(new Error('SHA1 mismatch'))
+                    finishError('SHA1 不匹配', new Error('SHA1 mismatch'))
                   }
 
                   setTimeout(() => dc.close(), 500)
@@ -243,14 +274,12 @@ export class SaveReceiver {
         }
 
         dc.onerror = () => {
-          this.onComplete(false, 'DataChannel 错误')
-          reject(new Error('DataChannel error'))
+          finishError('DataChannel 错误', new Error('DataChannel error'))
         }
 
         dc.onclose = () => {
-          if (!meta || receivedBytes < meta.totalSize) {
-            this.onComplete(false, '连接意外关闭')
-            reject(new Error('DataChannel closed before transfer complete'))
+          if (!this.settled && (!meta || receivedBytes < meta.totalSize)) {
+            finishError('连接意外关闭', new Error('DataChannel closed before transfer complete'))
           }
         }
       }

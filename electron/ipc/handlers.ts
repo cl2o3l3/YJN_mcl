@@ -34,6 +34,7 @@ import {
   type ServerCoreConfig, type McServerConfig
 } from '../core/mc-server-manager'
 import { packSave, unpackSave, getSaveInfo, listSaves, readArchive, unpackSaveFromBuffer } from '../core/save-sync'
+import { uploadSnapshotArchive, downloadSnapshotBuffer } from '../core/snapshot-sync'
 import type {
   DownloadProgress, MinecraftAccount, AuthProgressEvent, YggdrasilServerInfo,
   ResourceSearchParams, ResourceFile, ResourceType, ResourcePlatform, ResourceVersion,
@@ -485,8 +486,22 @@ export function registerIpcHandlers() {
     return readArchive(archivePath)
   }))
 
-  ipcMain.handle('save:unpackBuffer', safe(async (_, data: Buffer, gameDir: string, worldName: string) => {
-    return unpackSaveFromBuffer(data, gameDir, worldName)
+  ipcMain.handle('save:unpackBuffer', safe(async (_, data: Buffer | ArrayBuffer | Uint8Array, gameDir: string, worldName: string) => {
+    const buffer = Buffer.isBuffer(data)
+      ? data
+      : data instanceof ArrayBuffer
+        ? Buffer.from(data)
+        : Buffer.from(data)
+    return unpackSaveFromBuffer(buffer, gameDir, worldName)
+  }))
+
+  // ========== 共享世界快照 ==========
+  ipcMain.handle('snapshot:upload', safe(async (_, serverUrl: string, uploadPath: string, archivePath: string) => {
+    return uploadSnapshotArchive(serverUrl, uploadPath, archivePath)
+  }))
+
+  ipcMain.handle('snapshot:downloadBuffer', safe(async (_, serverUrl: string, downloadPath: string) => {
+    return downloadSnapshotBuffer(serverUrl, downloadPath)
   }))
 
   // ========== 自动重连提示 (Plan C) ==========

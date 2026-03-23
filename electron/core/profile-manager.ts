@@ -5,20 +5,65 @@ import path from 'node:path'
 import type { GameProfile, JvmArgs, ModLoaderInfo, VersionIsolationMode } from '../../src/types'
 import { getDefaultJvmArgs } from '../../src/types'
 import { getDefaultMinecraftDir } from './platform'
+import { loadSettings } from './settings-store'
 
 const store = new Store<{ profiles: GameProfile[] }>({
   name: 'profiles',
   defaults: { profiles: [] }
 })
 
+function sanitizeDirName(name: string): string {
+  return name
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '')
+    .slice(0, 60) || 'instance'
+}
+
+function isIsolationEnabled(mode: VersionIsolationMode | undefined, fallback: boolean): boolean {
+  if (mode === 'enabled') return true
+  if (mode === 'disabled') return false
+  return fallback
+}
+
+function buildIsolatedGameDir(baseGameDir: string, profileId: string, profileName: string): string {
+  return path.join(baseGameDir, 'instances', `${sanitizeDirName(profileName)}-${profileId.slice(0, 8)}`)
+}
+
+function normalizeProfile(profile: GameProfile): GameProfile {
+  const settings = loadSettings()
+  const baseGameDir = profile.baseGameDir || profile.gameDir || getDefaultMinecraftDir()
+  const versionIsolation: VersionIsolationMode = profile.versionIsolation || (profile.baseGameDir ? 'inherit' : 'disabled')
+  const gameDir = isIsolationEnabled(versionIsolation, settings.defaultVersionIsolation)
+    ? buildIsolatedGameDir(baseGameDir, profile.id, profile.name)
+    : baseGameDir
+
+  return {
+    ...profile,
+    baseGameDir,
+    versionIsolation,
+    gameDir,
+  }
+}
+
+function saveProfiles(profiles: GameProfile[]): void {
+  store.set('profiles', profiles.map(normalizeProfile))
+}
+
 /** 获取所有实例 */
 export function getAllProfiles(): GameProfile[] {
-  return store.get('profiles')
+  const profiles = store.get('profiles')
+  const normalized = profiles.map(normalizeProfile)
+  if (JSON.stringify(profiles) !== JSON.stringify(normalized)) {
+    store.set('profiles', normalized)
+  }
+  return normalized
 }
 
 /** 按 ID 获取 */
 export function getProfile(id: string): GameProfile | undefined {
-  return store.get('profiles').find(p => p.id === id)
+  return getAllProfiles().find(p => p.id === id)
 }
 
 /** 创建新实例 */
@@ -37,12 +82,20 @@ export function createProfile(opts: {
   windowHeight?: number
   tags?: string[]
 }): GameProfile {
+  const settings = loadSettings()
+  const id = randomUUID()
+  const baseGameDir = opts.baseGameDir || opts.gameDir || getDefaultMinecraftDir()
+  const versionIsolation: VersionIsolationMode = opts.versionIsolation || 'inherit'
+  const gameDir = isIsolationEnabled(versionIsolation, settings.defaultVersionIsolation)
+    ? buildIsolatedGameDir(baseGameDir, id, opts.name)
+    : baseGameDir
+
   const profile: GameProfile = {
-    id: randomUUID(),
+    id,
     name: opts.name,
-    gameDir: opts.gameDir || getDefaultMinecraftDir(),
-    baseGameDir: opts.baseGameDir,
-    versionIsolation: opts.versionIsolation,
+    gameDir,
+    baseGameDir,
+    versionIsolation,
     versionId: opts.versionId,
     modLoader: opts.modLoader,
     javaPath: opts.javaPath || '',
@@ -55,29 +108,29 @@ export function createProfile(opts: {
     tags: opts.tags
   }
 
-  const profiles = store.get('profiles')
+  const profiles = getAllProfiles()
   profiles.push(profile)
-  store.set('profiles', profiles)
+  saveProfiles(profiles)
   return profile
 }
 
 /** 更新实例 */
 export function updateProfile(id: string, updates: Partial<GameProfile>): GameProfile | null {
-  const profiles = store.get('profiles')
+  const profiles = getAllProfiles()
   const index = profiles.findIndex(p => p.id === id)
   if (index === -1) return null
 
-  profiles[index] = { ...profiles[index], ...updates }
-  store.set('profiles', profiles)
+  profiles[index] = normalizeProfile({ ...profiles[index], ...updates })
+  saveProfiles(profiles)
   return profiles[index]
 }
 
 /** 删除实例 */
 export function deleteProfile(id: string): boolean {
-  const profiles = store.get('profiles')
+  const profiles = getAllProfiles()
   const filtered = profiles.filter(p => p.id !== id)
   if (filtered.length === profiles.length) return false
-  store.set('profiles', filtered)
+  saveProfiles(filtered)
   return true
 }
 
@@ -90,7 +143,7 @@ export function duplicateProfile(id: string): GameProfile | null {
     name: `${source.name} (副本)`,
     versionId: source.versionId,
     gameDir: source.gameDir,
-    baseGameDir: source.baseGameDir,
+    baseGameDir: source.baseGameDir || source.gameDir,
     versionIsolation: source.versionIsolation,
     javaPath: source.javaPath,
     jvmArgs: { ...source.jvmArgs },
@@ -99,7 +152,7 @@ export function duplicateProfile(id: string): GameProfile | null {
     windowWidth: source.windowWidth,
     windowHeight: source.windowHeight,
     iconPath: source.iconPath,
-    tags: source.tags
+    tags: source.tags ? [...source.tags] : undefined
   })
 }
 
@@ -168,9 +221,9 @@ export function scanGameDir(gameDir: string): GameProfile[] {
   }
 
   if (added.length > 0) {
-    const profiles = store.get('profiles')
+    const profiles = getAllProfiles()
     profiles.push(...added)
-    store.set('profiles', profiles)
+    saveProfiles(profiles)
   }
 
   return added
