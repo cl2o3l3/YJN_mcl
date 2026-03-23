@@ -62,14 +62,13 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   let election: HostElection | null = null
   let webrtcManager: WebRTCManager | null = null
   let cleanupFns: (() => void)[] = []
+  let leaveInProgress = false
+  let launchExitListenerSetup = false
 
   // P2P 状态
   const peers = ref<P2PPeer[]>([])
   const mcLanPort = ref(0)
   const localPort = ref(0)
-  /** 标记: 已收到 __MC_LAN_READY 但 localPort 尚未就绪 */
-  let hostLanReadyPending = false
-  let hostLanReadyPeerId = ''
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -86,7 +85,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value === 'connected' || electionState.value === 'hosting'
   )
 
-  // 当 currentWorld 变化时，同步 worldMeta 到 election + 广播给所有 peer
+  // 当 currentWorld 变化时，同步 worldMeta 到 election
   watch(currentWorld, (world) => {
     if (world && election) {
       election.setWorldMeta({
@@ -95,27 +94,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         modLoader: world.modLoader,
       })
     }
-    // 主机选择实例后，通过 WebRTC 广播版本信息给所有已连接的客户端
-    if (world && myRole.value === 'host' && webrtcManager) {
-      broadcastWorldMeta(world)
-    }
   })
-
-  /** 通过 WebRTC DataChannel 广播 worldMeta 给所有已连接的 peer */
-  function broadcastWorldMeta(world: SharedWorld) {
-    if (!webrtcManager) return
-    const payload = JSON.stringify({
-      worldName: world.worldName,
-      mcVersion: world.mcVersion,
-      modLoader: world.modLoader || null,
-    })
-    const msg = new TextEncoder().encode('__WORLD_META:' + payload)
-    for (const p of peers.value) {
-      if (p.state === 'connected') {
-        webrtcManager.sendToPeer(p.id, msg)
-      }
-    }
-  }
 
   // ========== 工具 ==========
 
@@ -128,7 +107,20 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
+  function setupLaunchExitListener() {
+    if (launchExitListenerSetup) return
+    launchExitListenerSetup = true
+
+    window.api.launch.onExit(async () => {
+      if (!isActive.value || !isHost.value || leaveInProgress) return
+      addLog('检测到 MC 已退出，正在自动迁移房主并传输存档...')
+      await leaveWorld()
+    })
+  }
+
   // ========== 创建房间 ==========
+
+  setupLaunchExitListener()
 
   async function createWorld(config: {
     playerName: string
@@ -285,12 +277,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           return false
         }
       },
-      onCleanupArchive: async (gameDir: string) => {
-        try {
-          await window.api.save.cleanup(gameDir)
-          addLog('✓ 已清理临时存档文件')
-        } catch { /* ignore */ }
-      },
       onLog: addLog,
     }
   }
@@ -298,6 +284,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   // ========== 离开共享世界 ==========
 
   async function leaveWorld(): Promise<void> {
+    if (leaveInProgress) return
+    leaveInProgress = true
+
     try {
       if (election) {
         await election.leaveWorld()
@@ -317,65 +306,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       addLog(`离开时出错: ${e.message}`)
     } finally {
       resetState()
+      leaveInProgress = false
       addLog('已离开共享世界')
-    }
-  }
-
-  // ========== 存档自动分发 ==========
-
-  /** 标记: 存档已分发过 (防止重复分发) */
-  let saveDistributed = false
-
-  /**
-   * 主机游戏退出时自动分发存档给所有已连接的客户端
-   * 由 Multiplayer.vue 监听 launch.isRunning 变化后调用
-   */
-  async function distributeSave(): Promise<void> {
-    if (myRole.value !== 'host' || !currentGameDir || !webrtcManager) return
-    if (saveDistributed) return
-    saveDistributed = true
-
-    const connectedPeers = peers.value.filter(p => p.state === 'connected')
-    if (connectedPeers.length === 0) {
-      addLog('无已连接的客户端，跳过存档分发')
-      return
-    }
-
-    try {
-      const saves = await window.api.save.list(currentGameDir)
-      if (saves.length === 0) {
-        addLog('未找到存档，跳过分发')
-        return
-      }
-      const latest = saves.sort((a: any, b: any) => b.lastModified - a.lastModified)[0]
-      addLog(`游戏已退出，正在打包存档 ${latest.name}...`)
-      const packed = await window.api.save.pack(latest.path)
-      const fileData = await window.api.save.readArchive(packed.archivePath)
-
-      addLog(`正在向 ${connectedPeers.length} 位玩家分发存档 (${(packed.size / 1024 / 1024).toFixed(1)} MB)...`)
-      const results = await Promise.allSettled(
-        connectedPeers.map(async (p) => {
-          const pc = webrtcManager?.getPeerConnection(p.id)
-          if (!pc) return false
-          return new Promise<boolean>((resolve) => {
-            const sender = new SaveSender(
-              (progress) => { transferProgress.value = progress },
-              (success, err) => {
-                transferProgress.value = null
-                if (!success) addLog(`传输给 ${p.name || p.id.substring(0, 6)} 失败: ${err}`)
-                resolve(success)
-              }
-            )
-            sender.send(pc, fileData, packed.sha1, packed.worldName).catch(() => resolve(false))
-          })
-        })
-      )
-
-      const successCount = results.filter(r => r.status === 'fulfilled' && r.value).length
-      addLog(`✓ 存档分发完成: ${successCount}/${connectedPeers.length} 成功`)
-      await window.api.save.cleanup(currentGameDir).catch(() => {})
-    } catch (e: any) {
-      addLog(`存档分发失败: ${e.message}`)
     }
   }
 
@@ -426,32 +358,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         if (pc) {
           setupSaveReceiver(pc)
         }
-
-        // 如果 __MC_LAN_READY 在 localPort 就绪前已到达，补发 LAN 广播
-        if (hostLanReadyPending && localPort.value > 0) {
-          hostLanReadyPending = false
-          await window.api.p2p.startLanBroadcast(hostLanReadyPeerId || peerId, localPort.value, '共享世界')
-          addLog('MC 多人游戏列表中已自动显示服务器')
-          if (currentGameDir) {
-            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
-          }
-        }
-
-        // 通知主机: 客户端代理已就绪，请求发送 __MC_LAN_READY
-        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__CLIENT_READY'))
       }
 
       setupDataBridge(peerId)
-
-      // 主机: 向新连接的客户端发送当前版本信息
-      if (myRole.value === 'host' && currentWorld.value) {
-        const payload = JSON.stringify({
-          worldName: currentWorld.value.worldName,
-          mcVersion: currentWorld.value.mcVersion,
-          modLoader: currentWorld.value.modLoader || null,
-        })
-        webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__WORLD_META:' + payload))
-      }
     })
 
     webrtcManager.on('peer-error', (peerId: string, err: string) => {
@@ -459,9 +368,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     })
 
     // 监听来自信令的 offer (房主接收客人的 offer)
-    // 仅在尚无活跃连接时才建立，避免降级重试时反复销毁已连接的通道
     signaling.on('offer', (msg: any) => {
-      if (msg.fromPeerId && !webrtcManager!.isPeerActive(msg.fromPeerId)) {
+      if (msg.fromPeerId) {
         const peerName = msg.peerName || msg.fromPeerId.substring(0, 6)
         webrtcManager!.connectToPeer(msg.fromPeerId, peerName, false)
       }
@@ -471,42 +379,16 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     webrtcManager.on('data-from-peer', async (_peerId: string, data: Uint8Array) => {
       const text = new TextDecoder().decode(data)
 
-      // 客户端: 接收主机广播的版本信息
-      if (text.startsWith('__WORLD_META:') && myRole.value === 'client') {
-        try {
-          const meta = JSON.parse(text.slice('__WORLD_META:'.length))
-          currentWorld.value = {
-            roomCode: roomCode.value,
-            worldName: meta.worldName || currentWorld.value?.worldName || '共享房间',
-            mcVersion: meta.mcVersion || '',
-            modLoader: meta.modLoader || undefined,
-            createdAt: currentWorld.value?.createdAt || Date.now(),
-          }
-          addLog(`主机版本: ${meta.mcVersion || '未知'}${meta.modLoader ? ' · ' + meta.modLoader.type + ' ' + meta.modLoader.version : ''}`)
-        } catch { /* ignore parse errors */ }
-        return
-      }
-
       if (text === '__MC_LAN_READY' && myRole.value === 'client') {
+        addLog('房主已开启 MC 局域网')
         if (localPort.value > 0) {
-          addLog('房主已开启 MC 局域网')
           await window.api.p2p.startLanBroadcast(_peerId, localPort.value, '共享世界')
           addLog('MC 多人游戏列表中已自动显示服务器')
-          if (currentGameDir) {
-            await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
-          }
-        } else {
-          // localPort 尚未就绪，记住状态待 peer-connected 完成后处理
-          hostLanReadyPending = true
-          hostLanReadyPeerId = _peerId
-          addLog('房主已开启 MC 局域网（等待本地代理就绪...）')
         }
-        return
-      }
-
-      // 主机: 收到客户端代理就绪通知，补发 __MC_LAN_READY
-      if (text === '__CLIENT_READY' && myRole.value === 'host' && mcLanPort.value > 0) {
-        webrtcManager!.sendToPeer(_peerId, new TextEncoder().encode('__MC_LAN_READY'))
+        // Plan C: 写入 reconnect hint 以便 mod 自动重连
+        if (currentGameDir) {
+          await window.api.reconnect.writeHint(currentGameDir, '127.0.0.1', localPort.value)
+        }
         return
       }
 
@@ -547,9 +429,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       if (games.length === 0) return
       const port = games[0].port
       if (mcLanPort.value === port) return
-
-      // 如果检测到的端口与客户端自身代理端口相同，说明是自己的假 LAN 广播，忽略
-      if (localPort.value > 0 && port === localPort.value) return
 
       mcLanPort.value = port
       addLog(`检测到 MC LAN 端口: ${port}`)
@@ -634,15 +513,13 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     receiver.listen(pc).then(async ({ data, worldName: receivedWorldName }) => {
       addLog('✓ 存档接收完成，正在解包...')
       if (!currentGameDir) {
-        addLog('⚠️ 未设置游戏目录（请先选择一个实例），无法解包存档')
+        addLog('⚠️ 未设置游戏目录，无法解包存档')
         return
       }
       const worldName = receivedWorldName || currentWorld.value?.worldName || 'shared-world'
       try {
         await window.api.save.unpackBuffer(data, currentGameDir, worldName)
         addLog(`✓ 存档已解包到 saves/${worldName}`)
-        // 清理接收端临时文件
-        await window.api.save.cleanup(currentGameDir).catch(() => {})
         // 更新 worldMeta 以便 tryAutoElection 能找到这个存档
         if (election) election.setWorldMeta({
           worldName,
@@ -704,7 +581,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       mcLanPort.value = 0
       localPort.value = 0
       currentGameDir = ''
-      saveDistributed = false
       if (resetLogs) {
         logs.value = []
       }
@@ -749,7 +625,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     mcLanPort.value = 0
     localPort.value = 0
     currentGameDir = ''
-    saveDistributed = false
   }
 
   // 初始加载
@@ -781,7 +656,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     createWorld,
     joinWorld,
     leaveWorld,
-    distributeSave,
     setGameDir,
     removeWorldFromList,
 
