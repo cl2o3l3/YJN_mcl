@@ -238,7 +238,7 @@ function portableHotSwap(newExePath: string): void {
   const esc = (s: string) => s.replace(/'/g, "''")
 
   const ps1Content = `$ErrorActionPreference = 'Stop'
-$pid = ${process.pid}
+$targetPid = ${process.pid}
 $currentExe = '${esc(currentExe)}'
 $backupExe = '${esc(backupExe)}'
 $newExe = '${esc(newExePath)}'
@@ -246,7 +246,7 @@ $newExe = '${esc(newExePath)}'
 # Wait for old process to exit
 while ($true) {
   try {
-    Get-Process -Id $pid -ErrorAction Stop | Out-Null
+    Get-Process -Id $targetPid -ErrorAction Stop | Out-Null
     Start-Sleep -Milliseconds 500
   } catch {
     break
@@ -255,20 +255,20 @@ while ($true) {
 Start-Sleep -Seconds 2
 
 # Replace exe
-if (Test-Path $backupExe) { Remove-Item $backupExe -Force }
-Move-Item $currentExe $backupExe -Force
-Copy-Item $newExe $currentExe -Force
+if (Test-Path -LiteralPath $backupExe) { Remove-Item -LiteralPath $backupExe -Force }
+Move-Item -LiteralPath $currentExe -Destination $backupExe -Force
+Copy-Item -LiteralPath $newExe -Destination $currentExe -Force
 
 # Start new version
-Start-Process $currentExe
+Start-Process -FilePath $currentExe
 
 # Cleanup
 Start-Sleep -Seconds 3
-if (Test-Path $backupExe) { Remove-Item $backupExe -Force -ErrorAction SilentlyContinue }
-if (Test-Path $newExe) { Remove-Item $newExe -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $backupExe) { Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $newExe) { Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue }
 
 # Self-delete
-Remove-Item $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 `
 
   fs.writeFileSync(ps1Path, ps1Content, 'utf-8')
