@@ -8,7 +8,14 @@ import * as dgram from 'dgram'
 
 const LAN_BROADCAST_PORT = 4445
 const MOTD_REGEX = /\[MOTD\](.*?)\[\/MOTD\]\[AD\](\d+)\[\/AD\]/
-const LOG_PORT_REGEX = /Local game hosted on port (\d+)/
+const LOG_PORT_PATTERNS = [
+  /Local game hosted on port\s+(\d+)/i,
+  /Started serving on\s+(\d+)/i,
+  /Publishing.*?LAN.*?port\s+(\d+)/i,
+  /对局域网开放.*?(\d{2,5})/i,
+  /局域网.*?端口.*?(\d{2,5})/i,
+  /在端口\s*(\d{2,5})\s*上提供服务/i,
+]
 
 export interface LanGame {
   motd: string
@@ -102,8 +109,11 @@ export function stopLanDetector(): void {
  * 从游戏日志解析 LAN 端口
  */
 export function parseLanPortFromLog(logLine: string): number | null {
-  const match = LOG_PORT_REGEX.exec(logLine)
-  if (!match) return null
-  const port = parseInt(match[1], 10)
-  return (port >= 1 && port <= 65535) ? port : null
+  for (const pattern of LOG_PORT_PATTERNS) {
+    const match = pattern.exec(logLine)
+    if (!match) continue
+    const port = parseInt(match[1], 10)
+    if (port >= 1 && port <= 65535) return port
+  }
+  return null
 }

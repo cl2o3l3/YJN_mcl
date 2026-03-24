@@ -209,6 +209,24 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
   function setupHostListeners() {
     initWebRTC()
 
+    const handleHostLanPortDetected = async (port: number, source: 'broadcast' | 'log' = 'broadcast') => {
+      if (mcLanPort.value === port) return
+      mcLanPort.value = port
+      addLog(source === 'log' ? `从游戏日志识别到 MC LAN 端口: ${port}` : `检测到 MC LAN 端口: ${port}`)
+      for (const p of peers.value) {
+        if (p.state === 'connected') {
+          try {
+            await window.api.p2p.startHostProxy(p.id, port)
+            addLog(`已为 ${p.name} 启动代理 → MC:${port}`)
+            webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+          } catch (proxyErr: any) {
+            addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+            webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__PROXY_FAILED'))
+          }
+        }
+      }
+    }
+
     signaling!.on('peer-joined', (msg: any) => {
       addLog(`${msg.peerName} 加入了房间`)
       // 房主等待客人发 offer
@@ -233,27 +251,15 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     window.api.p2p.startLanDetector()
     const unsub = window.api.p2p.onLanGames(async (games) => {
       if (games.length > 0) {
-        const firstPort = games[0].port
-        if (mcLanPort.value !== firstPort) {
-          mcLanPort.value = firstPort
-          addLog(`检测到 MC LAN 端口: ${firstPort}`)
-          // 为所有已连接的 peer 启动代理并通知
-          for (const p of peers.value) {
-            if (p.state === 'connected') {
-              try {
-                await window.api.p2p.startHostProxy(p.id, firstPort)
-                addLog(`已为 ${p.name} 启动代理 → MC:${firstPort}`)
-                webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
-              } catch (proxyErr: any) {
-                addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
-                webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__PROXY_FAILED'))
-              }
-            }
-          }
-        }
+        await handleHostLanPortDetected(games[0].port, 'broadcast')
       }
     })
     cleanupFns.push(unsub)
+
+    const unsubLaunchLan = window.api.launch.onLanPortDetected((port) => {
+      void handleHostLanPortDetected(port, 'log')
+    })
+    cleanupFns.push(unsubLaunchLan)
   }
 
   // ========== 客人监听 ==========
@@ -493,24 +499,30 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     const dc = manualDc
     const peerId = 'manual-peer'
 
+    const handleManualHostLanPortDetected = async (port: number, source: 'broadcast' | 'log' = 'broadcast') => {
+      if (mcLanPort.value === port) return
+      mcLanPort.value = port
+      addLog(source === 'log' ? `从游戏日志识别到 MC LAN 端口: ${port}` : `检测到 MC LAN 端口: ${port}`)
+      await window.api.p2p.startHostProxy(peerId, port)
+      addLog('已启动代理')
+      if (dc.readyState === 'open') {
+        dc.send(new TextEncoder().encode('__MC_LAN_READY'))
+      }
+    }
+
     // 启动 LAN 检测
     window.api.p2p.startLanDetector()
     const unsub = window.api.p2p.onLanGames(async (games) => {
       if (games.length > 0) {
-        const firstPort = games[0].port
-        if (mcLanPort.value !== firstPort) {
-          mcLanPort.value = firstPort
-          addLog(`检测到 MC LAN 端口: ${firstPort}`)
-          await window.api.p2p.startHostProxy(peerId, firstPort)
-          addLog('已启动代理')
-          // 通知客人 MC LAN 已就绪
-          if (dc.readyState === 'open') {
-            dc.send(new TextEncoder().encode('__MC_LAN_READY'))
-          }
-        }
+        await handleManualHostLanPortDetected(games[0].port, 'broadcast')
       }
     })
     cleanupFns.push(unsub)
+
+    const unsubLaunchLan = window.api.launch.onLanPortDetected((port) => {
+      void handleManualHostLanPortDetected(port, 'log')
+    })
+    cleanupFns.push(unsubLaunchLan)
 
     // DC → MC
     dc.onmessage = (e) => {

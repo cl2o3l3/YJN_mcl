@@ -11,6 +11,7 @@ import { setMirrorSource, getMirrorSource } from '../core/mirror-manager'
 import { loadSettings, saveSettings } from '../core/settings-store'
 import { launchGame } from '../core/launcher'
 import { getDefaultMinecraftDir, getTotalMemoryMB } from '../core/platform'
+import { parseLanPortFromLog } from '../core/lan-detector'
 import {
   fetchFabricLoaderVersions, fetchQuiltLoaderVersions,
   fetchForgeVersions, fetchNeoForgeVersions,
@@ -193,13 +194,45 @@ export function registerIpcHandlers() {
 
     const child = launchGame(resolvedProfile, versionJson, validAccount, gameDir)
 
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+    let lastDetectedLanPort: number | null = null
+
+    const emitLanPortIfMatched = (text: string) => {
+      const port = parseLanPortFromLog(text)
+      if (!port || port === lastDetectedLanPort) return
+      lastDetectedLanPort = port
+      event.sender.send('launch:lanPortDetected', port)
+    }
+
+    const forwardLogChunk = (chunkText: string, stream: 'stdout' | 'stderr') => {
+      event.sender.send('launch:log', chunkText)
+
+      if (stream === 'stdout') {
+        stdoutBuffer += chunkText
+        const lines = stdoutBuffer.split(/\r?\n/)
+        stdoutBuffer = lines.pop() || ''
+        for (const line of lines) emitLanPortIfMatched(line)
+        emitLanPortIfMatched(stdoutBuffer)
+        return
+      }
+
+      stderrBuffer += chunkText
+      const lines = stderrBuffer.split(/\r?\n/)
+      stderrBuffer = lines.pop() || ''
+      for (const line of lines) emitLanPortIfMatched(line)
+      emitLanPortIfMatched(stderrBuffer)
+    }
+
     child.stdout?.on('data', (data: Buffer) => {
-      event.sender.send('launch:log', data.toString())
+      forwardLogChunk(data.toString(), 'stdout')
     })
     child.stderr?.on('data', (data: Buffer) => {
-      event.sender.send('launch:log', data.toString())
+      forwardLogChunk(data.toString(), 'stderr')
     })
     child.on('exit', (code) => {
+      emitLanPortIfMatched(stdoutBuffer)
+      emitLanPortIfMatched(stderrBuffer)
       event.sender.send('launch:exit', code)
     })
 

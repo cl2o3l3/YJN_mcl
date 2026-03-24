@@ -84,6 +84,11 @@ const api = {
       ipcRenderer.on('launch:log', handler)
       return () => ipcRenderer.off('launch:log', handler)
     },
+    onLanPortDetected: (callback: (port: number) => void) => {
+      const handler = (_: unknown, port: number) => callback(port)
+      ipcRenderer.on('launch:lanPortDetected', handler)
+      return () => ipcRenderer.off('launch:lanPortDetected', handler)
+    },
     onExit: (callback: (code: number | null) => void) => {
       const handler = (_: unknown, code: number | null) => callback(code)
       ipcRenderer.on('launch:exit', handler)

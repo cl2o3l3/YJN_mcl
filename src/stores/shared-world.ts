@@ -425,6 +425,57 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
   }
 
+  async function handleDetectedLanPort(port: number, source: 'broadcast' | 'log' = 'broadcast') {
+    if (mcLanPort.value === port) return
+    if (myRole.value !== 'host' && localPort.value > 0 && hostLanActivatedPeerId && port === localPort.value) return
+
+    const isAlreadyHostedByOther = !!hostInfo.value?.peerId && hostInfo.value.peerId !== myPeerId.value
+    const canAttemptHostRegistration = myRole.value === 'host' || (!isAlreadyHostedByOther && canRegisterAsHostFromLan)
+
+    if (!canAttemptHostRegistration) {
+      return
+    }
+
+    mcLanPort.value = port
+    addLog(source === 'log' ? `从游戏日志识别到 MC LAN 端口: ${port}` : `检测到 MC LAN 端口: ${port}`)
+
+    if (myRole.value !== 'host') {
+      if (election) {
+        try {
+          await election.becomeHost(port)
+          myRole.value = election.getRole()
+          if (myRole.value === 'host') {
+            canRegisterAsHostFromLan = false
+            updateSnapshotSchedule()
+            for (const p of peers.value) {
+              if (p.state === 'connected') {
+                try {
+                  await window.api.p2p.startHostProxy(p.id, port)
+                  webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+                } catch (proxyErr: any) {
+                  addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+                }
+              }
+            }
+          }
+        } catch {
+          // becomeHost 失败 (host-conflict), election 已处理状态
+        }
+      }
+    } else {
+      for (const p of peers.value) {
+        if (p.state === 'connected') {
+          try {
+            await window.api.p2p.startHostProxy(p.id, port)
+            webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+          } catch (proxyErr: any) {
+            addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
+          }
+        }
+      }
+    }
+  }
+
   async function prepareLatestSaveArchive(force = false) {
     if (force) {
       cachedPackedSave = null
@@ -948,60 +999,14 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     window.api.p2p.startLanDetector()
     const unsubLan = window.api.p2p.onLanGames(async (games: Array<{ port: number }>) => {
       if (games.length === 0) return
-      const port = games[0].port
-      if (mcLanPort.value === port) return
-      if (myRole.value !== 'host' && localPort.value > 0 && hostLanActivatedPeerId && port === localPort.value) return
-
-      const isAlreadyHostedByOther = !!hostInfo.value?.peerId && hostInfo.value.peerId !== myPeerId.value
-      const canAttemptHostRegistration = myRole.value === 'host' || (!isAlreadyHostedByOther && canRegisterAsHostFromLan)
-
-      if (!canAttemptHostRegistration) {
-        return
-      }
-
-      mcLanPort.value = port
-      addLog(`检测到 MC LAN 端口: ${port}`)
-
-      if (myRole.value !== 'host') {
-        // 尚未成为主机 → 尝试注册为主机
-        if (election) {
-          try {
-            await election.becomeHost(port)
-            myRole.value = election.getRole()
-            if (myRole.value === 'host') {
-              canRegisterAsHostFromLan = false
-              updateSnapshotSchedule()
-              // 为已连接的 peer 启动代理
-              for (const p of peers.value) {
-                if (p.state === 'connected') {
-                  try {
-                    await window.api.p2p.startHostProxy(p.id, port)
-                    webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
-                  } catch (proxyErr: any) {
-                    addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
-                  }
-                }
-              }
-            }
-          } catch {
-            // becomeHost 失败 (host-conflict), election 已处理状态
-          }
-        }
-      } else {
-        // 已经是主机，LAN 端口变更 → 更新代理
-        for (const p of peers.value) {
-          if (p.state === 'connected') {
-            try {
-              await window.api.p2p.startHostProxy(p.id, port)
-              webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
-            } catch (proxyErr: any) {
-              addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
-            }
-          }
-        }
-      }
+      await handleDetectedLanPort(games[0].port, 'broadcast')
     })
     cleanupFns.push(unsubLan)
+
+    const unsubLaunchLan = window.api.launch.onLanPortDetected((port) => {
+      void handleDetectedLanPort(port, 'log')
+    })
+    cleanupFns.push(unsubLaunchLan)
 
     // 监听 host-changed: 当新主机出现时，非主机 peer 自动发起 WebRTC 连接
     const onHostChangedP2P = (msg: any) => {
