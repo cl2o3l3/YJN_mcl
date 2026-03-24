@@ -182,13 +182,46 @@ async function handleCreateSharedWorld() {
 async function handleJoinSharedWorld() {
   if (!auth.selectedAccount || !swJoinCode.value.trim()) return
   swJoining.value = true
+  const normalizedRoomCode = swJoinCode.value.trim().toUpperCase()
   try {
     await sw.joinWorld({
       playerName: auth.selectedAccount.username,
-      roomCode: swJoinCode.value.trim().toUpperCase(),
+      roomCode: normalizedRoomCode,
     })
-  } catch { /* error in store */ }
+  } catch {
+    if (sw.error.includes('房间不存在')) {
+      sw.removeWorldFromList(normalizedRoomCode)
+      notifsStore.push('warning', `房间 ${normalizedRoomCode} 不存在，已从本地列表移除`)
+    }
+  }
   swJoining.value = false
+}
+
+function handleSelectSavedWorld(roomCode: string) {
+  swJoinCode.value = roomCode
+  swTab.value = 'join'
+}
+
+function handleRemoveSavedWorld(roomCode: string) {
+  sw.removeWorldFromList(roomCode)
+  if (swJoinCode.value.trim().toUpperCase() === roomCode) {
+    swJoinCode.value = ''
+  }
+}
+
+async function handleToggleSharedWorldPinned() {
+  try {
+    await sw.setRoomPinned(!sw.roomPinned)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    notifsStore.push('error', `更新常驻状态失败: ${msg}`)
+    sw.addLog(`更新常驻状态失败: ${msg}`)
+  }
+}
+
+function formatDateTime(timestamp?: number): string {
+  if (!timestamp) return '暂无'
+  return new Date(timestamp).toLocaleString()
 }
 
 async function handleLeaveSharedWorld(mode: 'leave' | 'transfer' = 'leave') {
@@ -943,12 +976,17 @@ function rttClass(rtt: number): string {
           <div v-if="sw.worlds.length === 0" class="center-card">
             <p class="text-muted">还没有共享世界，创建或加入一个吧</p>
           </div>
-          <div v-for="w in sw.worlds" :key="w.roomCode" class="sw-world-card" @click="swJoinCode = w.roomCode; swTab = 'join'">
+          <div v-for="w in sw.worlds" :key="w.roomCode" class="sw-world-card" @click="handleSelectSavedWorld(w.roomCode)">
             <div class="sw-world-icon">🌍</div>
             <div class="sw-world-info">
-              <span class="sw-world-name">{{ w.worldName }}</span>
+              <div class="sw-world-title-row">
+                <span class="sw-world-name">{{ w.worldName }}</span>
+                <span v-if="w.pinned" class="sw-world-pill">常驻</span>
+              </div>
               <span class="text-muted text-xs">{{ w.mcVersion }} · {{ formatWorldLoader(w.modLoader) }} · {{ w.roomCode }}</span>
+              <span class="text-muted text-xs">最近快照：{{ formatDateTime(w.lastSyncTime) }}</span>
             </div>
+            <button class="sw-world-delete" title="从列表移除" @click.stop="handleRemoveSavedWorld(w.roomCode)">删除</button>
             <span class="mode-arrow">›</span>
           </div>
         </div>
@@ -1003,6 +1041,9 @@ function rttClass(rtt: number): string {
               <div class="sw-status-badges">
                 <span class="sw-role-badge" :class="sw.isHost ? 'role-host' : 'role-client'">
                   {{ sw.isHost ? '👑 主机' : '🎮 客户端' }}
+                </span>
+                <span class="sw-server-badge" :class="sw.roomPinned ? 'server-running' : 'server-idle'">
+                  {{ sw.roomPinned ? '📌 常驻房间' : '⏳ 7天保留' }}
                 </span>
               </div>
             </div>
@@ -1082,6 +1123,27 @@ function rttClass(rtt: number): string {
                 <div class="sw-progress-fill" :style="{ width: (sw.transferProgress.total > 0 ? sw.transferProgress.current / sw.transferProgress.total * 100 : 0) + '%' }"></div>
               </div>
               <span class="text-xs">{{ (sw.transferProgress.total > 0 ? (sw.transferProgress.current / sw.transferProgress.total * 100) : 0).toFixed(0) }}% · {{ formatBytes(sw.transferProgress.current) }}/{{ formatBytes(sw.transferProgress.total) }}</span>
+            </div>
+          </div>
+
+          <div class="card mt">
+            <h3>云端快照</h3>
+            <p class="text-muted text-xs" v-if="sw.latestSnapshot">
+              #{{ sw.latestSnapshot.generation }} · {{ formatBytes(sw.latestSnapshot.size) }} · 上传于 {{ formatDateTime(sw.latestSnapshot.uploadedAt) }}
+            </p>
+            <p class="text-muted text-xs" v-if="sw.latestSnapshot && !sw.latestSnapshot.pinned">
+              过期时间：{{ formatDateTime(sw.latestSnapshot.expiresAt) }}
+            </p>
+            <p class="text-muted text-xs" v-else-if="sw.latestSnapshot && sw.latestSnapshot.pinned">
+              当前快照已随房间常驻，不会自动过期
+            </p>
+            <p class="text-muted text-xs" v-if="!sw.latestSnapshot">
+              还没有上传过云端快照。主机在周期同步、离开房间或退出游戏时会上传。
+            </p>
+            <div class="sw-controls mt" v-if="sw.isConnected">
+              <button class="btn-secondary" @click="handleToggleSharedWorldPinned" :disabled="sw.roomPinUpdating">
+                {{ sw.roomPinUpdating ? '处理中...' : sw.roomPinned ? '取消常驻' : '设为常驻' }}
+              </button>
             </div>
           </div>
 
@@ -1558,7 +1620,31 @@ h4 { font-size: 14px; margin-bottom: 4px; }
 .sw-world-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .sw-world-icon { font-size: 24px; flex-shrink: 0; }
 .sw-world-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.sw-world-title-row { display: flex; align-items: center; gap: 8px; }
 .sw-world-name { font-size: 14px; font-weight: 600; }
+.sw-world-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(241, 196, 15, 0.16);
+  color: #d4ac0d;
+}
+.sw-world-delete {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.sw-world-delete:hover {
+  color: #e74c3c;
+  border-color: rgba(231, 76, 60, 0.45);
+  background: rgba(231, 76, 60, 0.08);
+}
 
 .sw-form { display: flex; flex-direction: column; gap: 10px; }
 .sw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }

@@ -282,6 +282,10 @@ export class SignalingClient {
     this.send({ type: 'query-latest-snapshot' })
   }
 
+  setRoomPinned(pinned: boolean): void {
+    this.sendChecked({ type: 'set-room-pinned', pinned })
+  }
+
   unregisterHost(): void {
     this.send({ type: 'unregister-host' })
   }

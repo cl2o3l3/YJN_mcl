@@ -20,6 +20,7 @@ export interface SharedWorld {
   worldName: string
   mcVersion: string
   modLoader?: ModLoaderInfo
+  pinned?: boolean
   localSavePath?: string   // 本地存档缓存路径
   lastSyncTime?: number
   createdAt: number
@@ -28,6 +29,7 @@ export interface SharedWorld {
 interface SharedWorldSnapshot {
   snapshotId: string
   generation: number
+  pinned: boolean
   worldName: string
   mcVersion: string
   modLoader?: ModLoaderInfo
@@ -70,6 +72,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
   // 房间码
   const roomCode = ref('')
+  const roomPinned = ref(false)
+  const roomPinUpdating = ref(false)
   const latestSnapshot = ref<SharedWorldSnapshot | null>(null)
 
   // 内部对象
@@ -116,6 +120,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       worldName: world.worldName || '共享房间',
       mcVersion: world.mcVersion || '',
       modLoader: world.modLoader,
+      pinned: !!world.pinned,
       localSavePath: world.localSavePath,
       lastSyncTime: world.lastSyncTime,
       createdAt: world.createdAt || Date.now(),
@@ -158,6 +163,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     return {
       snapshotId: String(snapshot.snapshotId),
       generation: Number(snapshot.generation) || 0,
+      pinned: !!snapshot.pinned,
       worldName: String(snapshot.worldName || currentWorld.value?.worldName || 'shared-world'),
       mcVersion: String(snapshot.mcVersion || currentWorld.value?.mcVersion || ''),
       modLoader,
@@ -167,6 +173,17 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       expiresAt: Number(snapshot.expiresAt) || Date.now(),
       downloadPath: String(snapshot.downloadPath),
     }
+  }
+
+  function syncCurrentWorldInList(overrides?: Partial<SharedWorld>) {
+    if (!currentWorld.value) return
+    upsertWorldInList({
+      ...currentWorld.value,
+      roomCode: roomCode.value || currentWorld.value.roomCode,
+      pinned: roomPinned.value,
+      lastSyncTime: latestSnapshot.value?.uploadedAt || currentWorld.value.lastSyncTime,
+      ...overrides,
+    })
   }
 
   async function waitForSignalEvent(eventName: string, timeoutMs = 15000): Promise<any> {
@@ -232,6 +249,14 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       signaling.queryLatestSnapshot()
       const result = await snapshotInfoPromise
       latestSnapshot.value = normalizeSnapshot(result?.snapshot)
+      if (latestSnapshot.value) {
+        syncCurrentWorldInList({
+          worldName: latestSnapshot.value.worldName,
+          mcVersion: latestSnapshot.value.mcVersion,
+          modLoader: latestSnapshot.value.modLoader,
+          lastSyncTime: latestSnapshot.value.uploadedAt,
+        })
+      }
       if (!silent && latestSnapshot.value) {
         addLog(`检测到云端快照 #${latestSnapshot.value.generation}，时间 ${new Date(latestSnapshot.value.uploadedAt).toLocaleString()}`)
       }
@@ -271,9 +296,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       latestSnapshot.value = normalizeSnapshot(stored?.snapshot)
       if (latestSnapshot.value && currentWorld.value) {
-        upsertWorldInList({
-          ...currentWorld.value,
-          roomCode: roomCode.value,
+        syncCurrentWorldInList({
           worldName: packed.worldName,
           lastSyncTime: latestSnapshot.value.uploadedAt,
         })
@@ -318,6 +341,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         worldName,
         mcVersion: latestSnapshot.value.mcVersion,
         modLoader: latestSnapshot.value.modLoader,
+        pinned: roomPinned.value,
         lastSyncTime: latestSnapshot.value.uploadedAt,
         createdAt: currentWorld.value?.createdAt || Date.now(),
       }
@@ -356,8 +380,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       broadcastWorldMeta(world)
     }
     if (world?.roomCode) {
-      upsertWorldInList(world)
+      syncCurrentWorldInList(world)
     }
+  })
+
+  watch(roomPinned, () => {
+    syncCurrentWorldInList()
   })
 
   function broadcastWorldMeta(world: SharedWorld) {
@@ -502,6 +530,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         worldName: packed.worldName,
         mcVersion: currentWorld.value?.mcVersion || '',
         modLoader: currentWorld.value?.modLoader,
+        pinned: roomPinned.value,
         createdAt: currentWorld.value?.createdAt || Date.now(),
       }
     }
@@ -569,6 +598,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     playerName: string
   }): Promise<string> {
     error.value = ''
+    roomPinned.value = false
 
     try {
       signaling = new SignalingClient()
@@ -586,6 +616,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         worldName: currentWorld.value?.worldName || '共享房间',
         mcVersion: currentWorld.value?.mcVersion || '',
         modLoader: currentWorld.value?.modLoader,
+        pinned: false,
         createdAt: currentWorld.value?.createdAt || Date.now(),
       })
       // 房主自己就是第一个成员
@@ -611,6 +642,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     roomCode: string
   }): Promise<void> {
     error.value = ''
+    roomPinned.value = false
 
     try {
       signaling = new SignalingClient()
@@ -624,6 +656,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       await election.joinWorld(config.roomCode, config.playerName)
       myRole.value = election.getRole()
+      roomPinned.value = election.getRoomPinned?.() || false
       canRegisterAsHostFromLan = false
 
       // 从 election 获取已有成员列表 (room-joined.peers) + 自己
@@ -643,6 +676,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           worldName: meta.worldName,
           mcVersion: meta.mcVersion,
           modLoader: meta.modLoader,
+          pinned: roomPinned.value,
           createdAt: Date.now(),
         }
       } else {
@@ -650,6 +684,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           roomCode: config.roomCode,
           worldName: '共享房间',
           mcVersion: '',
+          pinned: roomPinned.value,
           createdAt: Date.now(),
         })
       }
@@ -921,6 +956,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
             worldName: meta.worldName || currentWorld.value?.worldName || '共享房间',
             mcVersion: meta.mcVersion || '',
             modLoader: meta.modLoader || undefined,
+            pinned: roomPinned.value,
             createdAt: currentWorld.value?.createdAt || Date.now(),
           }
           addLog(`主机版本: ${meta.mcVersion || '未知'}${meta.modLoader ? ' · ' + meta.modLoader.type + ' ' + meta.modLoader.version : ''}`)
@@ -966,22 +1002,34 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       const snapshot = normalizeSnapshot(msg?.snapshot)
       if (!snapshot) return
       latestSnapshot.value = snapshot
-      if (currentWorld.value) {
-        upsertWorldInList({
-          ...currentWorld.value,
-          roomCode: roomCode.value,
-          worldName: snapshot.worldName,
-          mcVersion: snapshot.mcVersion,
-          modLoader: snapshot.modLoader,
-          lastSyncTime: snapshot.uploadedAt,
-        })
-      }
+      syncCurrentWorldInList({
+        worldName: snapshot.worldName,
+        mcVersion: snapshot.mcVersion,
+        modLoader: snapshot.modLoader,
+        lastSyncTime: snapshot.uploadedAt,
+      })
       if (!hostInfo.value?.peerId) {
         void restoreLatestSnapshotIfNeeded()
       }
     }
     signaling.on('snapshot-updated', onSnapshotUpdated)
     cleanupFns.push(() => signaling?.off('snapshot-updated', onSnapshotUpdated))
+
+    const onRoomPinnedUpdated = (msg: any) => {
+      roomPinned.value = !!msg.roomPinned
+      if (msg?.snapshot) {
+        latestSnapshot.value = normalizeSnapshot(msg.snapshot)
+      } else if (latestSnapshot.value) {
+        latestSnapshot.value = {
+          ...latestSnapshot.value,
+          pinned: roomPinned.value,
+        }
+      }
+      syncCurrentWorldInList()
+      addLog(roomPinned.value ? '该共享世界已设为常驻，空房间和快照不会自动过期' : '该共享世界已取消常驻，将恢复默认 7 天过期策略')
+    }
+    signaling.on('room-pinned-updated', onRoomPinnedUpdated)
+    cleanupFns.push(() => signaling?.off('room-pinned-updated', onRoomPinnedUpdated))
 
     const onPeerLeft = (msg: any) => {
       addLog('玩家离开')
@@ -1153,10 +1201,43 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       if (data) {
         const parsed = JSON.parse(data)
         if (Array.isArray(parsed)) {
-          worlds.value = parsed
+          worlds.value = parsed.map((world: any) => ({
+            roomCode: String(world.roomCode || '').trim().toUpperCase(),
+            worldName: String(world.worldName || '共享房间'),
+            mcVersion: String(world.mcVersion || ''),
+            modLoader: world.modLoader,
+            pinned: !!world.pinned,
+            localSavePath: world.localSavePath ? String(world.localSavePath) : undefined,
+            lastSyncTime: typeof world.lastSyncTime === 'number' ? world.lastSyncTime : undefined,
+            createdAt: Number(world.createdAt) || Date.now(),
+          })).filter((world: SharedWorld) => !!world.roomCode)
         }
       }
     } catch { /* ignore */ }
+  }
+
+  async function setRoomPinned(pinned: boolean): Promise<void> {
+    if (!signaling || !roomCode.value) throw new Error('当前不在共享世界中')
+    if (roomPinUpdating.value || roomPinned.value === pinned) return
+
+    roomPinUpdating.value = true
+    try {
+      const roomPinnedPromise = waitForSignalEvent('room-pinned-updated', 10000)
+      signaling.setRoomPinned(pinned)
+      const result = await roomPinnedPromise
+      roomPinned.value = !!result?.roomPinned
+      if (result?.snapshot) {
+        latestSnapshot.value = normalizeSnapshot(result.snapshot)
+      } else if (latestSnapshot.value) {
+        latestSnapshot.value = {
+          ...latestSnapshot.value,
+          pinned: roomPinned.value,
+        }
+      }
+      syncCurrentWorldInList()
+    } finally {
+      roomPinUpdating.value = false
+    }
   }
 
   // ========== 内部 ==========
@@ -1165,6 +1246,10 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState.value = 'idle'
     hostInfo.value = null
     myRole.value = null
+    roomPinned.value = false
+    roomPinUpdating.value = false
+    roomPinned.value = false
+    roomPinUpdating.value = false
     latestSnapshot.value = null
     transferProgress.value = null
     currentWorld.value = null
@@ -1196,6 +1281,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     electionState,
     hostInfo,
     myRole,
+    roomPinned,
+    roomPinUpdating,
     latestSnapshot,
     transferProgress,
     logs,
@@ -1216,6 +1303,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     createWorld,
     joinWorld,
     leaveWorld,
+    setRoomPinned,
     setGameDir,
     removeWorldFromList,
 

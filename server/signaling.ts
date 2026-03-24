@@ -24,6 +24,7 @@ const PERSISTENT_ROOM_TTL = 7 * 24 * 60 * 60 * 1000 // 7d
 const SNAPSHOT_TTL = 7 * 24 * 60 * 60 * 1000 // 7d
 const SNAPSHOT_UPLOAD_TOKEN_TTL = 10 * 60 * 1000 // 10 min
 const SNAPSHOT_BASE_DIR = path.join(process.cwd(), '.snapshot-store')
+const STATE_FILE = path.join(SNAPSHOT_BASE_DIR, 'state.json')
 
 // ========== 类型 ==========
 
@@ -39,11 +40,14 @@ interface Room {
   id: string
   code: string
   hostId: string
+  createdAt: number
   peers: Map<string, Peer>
   relayBytes: number
   relayResetTime: number
   // 持久房间支持
   type: 'temporary' | 'persistent'
+  pinned: boolean
+  pinnedAt?: number
   currentHostId: string | null    // 共享世界的当前 MC 服务器主机
   currentHostPort?: number | null
   worldMeta?: {                   // 共享世界元数据
@@ -61,6 +65,7 @@ interface Room {
 interface RoomSnapshot {
   snapshotId: string
   generation: number
+  pinned: boolean
   worldName: string
   mcVersion: string
   modLoader?: {
@@ -92,6 +97,38 @@ interface PendingSnapshotUpload {
   filePath: string
 }
 
+interface PersistedState {
+  rooms: PersistedRoom[]
+}
+
+interface PersistedRoom {
+  id: string
+  code: string
+  hostId: string
+  createdAt: number
+  pinned: boolean
+  pinnedAt?: number
+  worldMeta?: Room['worldMeta']
+  latestSnapshot?: PersistedSnapshot
+}
+
+interface PersistedSnapshot {
+  snapshotId: string
+  generation: number
+  pinned: boolean
+  worldName: string
+  mcVersion: string
+  modLoader?: {
+    type: string
+    version: string
+  }
+  sha1: string
+  size: number
+  uploadedAt: number
+  expiresAt: number
+  filePath: string
+}
+
 // ========== 状态 ==========
 
 const peers = new Map<string, Peer>()
@@ -99,6 +136,7 @@ const rooms = new Map<string, Room>()
 const codeToRoom = new Map<string, string>()
 const snapshots = new Map<string, RoomSnapshot>()
 const pendingSnapshotUploads = new Map<string, PendingSnapshotUpload>()
+let persistStateTimer: ReturnType<typeof setTimeout> | null = null
 
 // ========== 工具函数 ==========
 
@@ -133,6 +171,7 @@ function publicSnapshot(snapshot: RoomSnapshot) {
   return {
     snapshotId: snapshot.snapshotId,
     generation: snapshot.generation,
+    pinned: snapshot.pinned,
     worldName: snapshot.worldName,
     mcVersion: snapshot.mcVersion,
     modLoader: snapshot.modLoader,
@@ -144,12 +183,126 @@ function publicSnapshot(snapshot: RoomSnapshot) {
   }
 }
 
+function publicRoom(room: Room) {
+  return {
+    roomCode: room.code,
+    pinned: room.pinned,
+    pinnedAt: room.pinnedAt,
+    worldMeta: room.worldMeta,
+    snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
+  }
+}
+
+function toPersistedSnapshot(snapshot: RoomSnapshot): PersistedSnapshot {
+  return {
+    snapshotId: snapshot.snapshotId,
+    generation: snapshot.generation,
+    pinned: snapshot.pinned,
+    worldName: snapshot.worldName,
+    mcVersion: snapshot.mcVersion,
+    modLoader: snapshot.modLoader,
+    sha1: snapshot.sha1,
+    size: snapshot.size,
+    uploadedAt: snapshot.uploadedAt,
+    expiresAt: snapshot.expiresAt,
+    filePath: snapshot.filePath,
+  }
+}
+
+function toPersistedRoom(room: Room): PersistedRoom {
+  return {
+    id: room.id,
+    code: room.code,
+    hostId: room.hostId,
+    createdAt: room.createdAt,
+    pinned: room.pinned,
+    pinnedAt: room.pinnedAt,
+    worldMeta: room.worldMeta,
+    latestSnapshot: room.latestSnapshot ? toPersistedSnapshot(room.latestSnapshot) : undefined,
+  }
+}
+
+async function writePersistedState() {
+  const pinnedRooms = Array.from(rooms.values())
+    .filter(room => room.type === 'persistent' && room.pinned)
+    .map(room => toPersistedRoom(room))
+
+  await fsp.mkdir(SNAPSHOT_BASE_DIR, { recursive: true })
+  await fsp.writeFile(STATE_FILE, JSON.stringify({ rooms: pinnedRooms }, null, 2), 'utf8')
+}
+
+function schedulePersistedStateWrite() {
+  if (persistStateTimer) clearTimeout(persistStateTimer)
+  persistStateTimer = setTimeout(() => {
+    persistStateTimer = null
+    void writePersistedState().catch((error) => {
+      console.error('[State] Failed to persist room state:', error?.message || error)
+    })
+  }, 200)
+}
+
+async function loadPersistedState() {
+  try {
+    const raw = await fsp.readFile(STATE_FILE, 'utf8')
+    const parsed = JSON.parse(raw) as PersistedState
+    if (!Array.isArray(parsed.rooms)) return
+
+    for (const persistedRoom of parsed.rooms) {
+      if (!persistedRoom?.id || !persistedRoom?.code || !persistedRoom.pinned) continue
+
+      let snapshot: RoomSnapshot | undefined
+      if (persistedRoom.latestSnapshot?.snapshotId && persistedRoom.latestSnapshot.filePath && fs.existsSync(persistedRoom.latestSnapshot.filePath)) {
+        snapshot = {
+          snapshotId: persistedRoom.latestSnapshot.snapshotId,
+          generation: persistedRoom.latestSnapshot.generation,
+          pinned: true,
+          worldName: persistedRoom.latestSnapshot.worldName,
+          mcVersion: persistedRoom.latestSnapshot.mcVersion,
+          modLoader: persistedRoom.latestSnapshot.modLoader,
+          sha1: persistedRoom.latestSnapshot.sha1,
+          size: persistedRoom.latestSnapshot.size,
+          uploadedAt: persistedRoom.latestSnapshot.uploadedAt,
+          expiresAt: persistedRoom.latestSnapshot.expiresAt,
+          filePath: persistedRoom.latestSnapshot.filePath,
+        }
+        snapshots.set(snapshot.snapshotId, snapshot)
+      }
+
+      const room: Room = {
+        id: persistedRoom.id,
+        code: persistedRoom.code,
+        hostId: persistedRoom.hostId || '',
+        createdAt: persistedRoom.createdAt || Date.now(),
+        peers: new Map(),
+        relayBytes: 0,
+        relayResetTime: Date.now(),
+        type: 'persistent',
+        pinned: true,
+        pinnedAt: persistedRoom.pinnedAt || Date.now(),
+        currentHostId: null,
+        currentHostPort: null,
+        worldMeta: persistedRoom.worldMeta,
+        latestSnapshot: snapshot,
+        emptyAt: undefined,
+      }
+
+      rooms.set(room.id, room)
+      codeToRoom.set(room.code, room.id)
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      console.error('[State] Failed to load persisted room state:', error?.message || error)
+    }
+  }
+}
+
 async function deleteSnapshot(snapshot?: RoomSnapshot) {
   if (!snapshot) return
   snapshots.delete(snapshot.snapshotId)
   try {
     await fsp.rm(snapshot.filePath, { force: true })
   } catch { /* ignore */ }
+  schedulePersistedStateWrite()
 }
 
 async function handleSnapshotUpload(req: http.IncomingMessage, res: http.ServerResponse, url: URL, snapshotId: string) {
@@ -284,10 +437,12 @@ function handleMessage(peer: Peer, raw: string) {
         id: roomId,
         code,
         hostId: peer.id,
+        createdAt: Date.now(),
         peers: new Map([[peer.id, peer]]),
         relayBytes: 0,
         relayResetTime: Date.now(),
         type: 'temporary',
+        pinned: false,
         currentHostId: null,
         currentHostPort: null,
       }
@@ -466,10 +621,12 @@ function handleMessage(peer: Peer, raw: string) {
         id: roomId,
         code,
         hostId: peer.id,
+        createdAt: Date.now(),
         peers: new Map([[peer.id, peer]]),
         relayBytes: 0,
         relayResetTime: Date.now(),
         type: 'persistent',
+        pinned: false,
         currentHostId: null,
         currentHostPort: null,
         worldMeta: msg.worldMeta ? {
@@ -489,7 +646,7 @@ function handleMessage(peer: Peer, raw: string) {
       codeToRoom.set(code, roomId)
       peer.roomId = roomId
 
-      sendTo(peer.ws, { type: 'persistent-room-created', roomId, roomCode: code })
+      sendTo(peer.ws, { type: 'persistent-room-created', roomId, roomCode: code, room: publicRoom(room) })
       console.log(`[Room] Persistent room ${code} created by ${playerName}`)
       break
     }
@@ -554,6 +711,7 @@ function handleMessage(peer: Peer, raw: string) {
           hostName: hostPeer?.name || 'Unknown',
           mcPort: room.currentHostPort || undefined,
           worldMeta: room.worldMeta,
+          roomPinned: room.pinned,
           snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
         })
       } else {
@@ -561,9 +719,40 @@ function handleMessage(peer: Peer, raw: string) {
           type: 'host-info',
           hostId: null,
           worldMeta: room.worldMeta,
+          roomPinned: room.pinned,
           snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
         })
       }
+      break
+    }
+
+    case 'set-room-pinned': {
+      if (!peer.roomId) { sendTo(peer.ws, { type: 'error', message: '未在房间中' }); return }
+      const room = rooms.get(peer.roomId)
+      if (!room || room.type !== 'persistent') { sendTo(peer.ws, { type: 'error', message: '房间不存在' }); return }
+
+      const pinned = !!msg.pinned
+      room.pinned = pinned
+      room.pinnedAt = pinned ? (room.pinnedAt || Date.now()) : undefined
+
+      if (room.latestSnapshot) {
+        room.latestSnapshot.pinned = pinned
+        if (!pinned) {
+          room.latestSnapshot.expiresAt = Date.now() + SNAPSHOT_TTL
+        }
+      }
+
+      schedulePersistedStateWrite()
+
+      const payload = {
+        type: 'room-pinned-updated',
+        roomPinned: room.pinned,
+        pinnedAt: room.pinnedAt,
+        snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
+      }
+      sendTo(peer.ws, payload)
+      broadcastToRoom(room, payload, peer.id)
+      console.log(`[Room] ${room.code} pinned state changed: ${room.pinned}`)
       break
     }
 
@@ -636,6 +825,7 @@ function handleMessage(peer: Peer, raw: string) {
       const snapshot: RoomSnapshot = {
         snapshotId,
         generation: pending.generation,
+        pinned: room.pinned,
         worldName: pending.worldName,
         mcVersion: pending.mcVersion,
         modLoader: pending.modLoader,
@@ -659,6 +849,8 @@ function handleMessage(peer: Peer, raw: string) {
       if (oldSnapshot && oldSnapshot.snapshotId !== snapshot.snapshotId) {
         void deleteSnapshot(oldSnapshot)
       }
+
+      schedulePersistedStateWrite()
 
       sendTo(peer.ws, { type: 'snapshot-stored', snapshot: publicSnapshot(snapshot) })
       broadcastToRoom(room, { type: 'snapshot-updated', snapshot: publicSnapshot(snapshot) }, peer.id)
@@ -725,6 +917,7 @@ function removePeerFromRoom(peer: Peer) {
       room.emptyAt = Date.now()
       console.log(`[Room] Persistent room ${room.code} is empty, TTL starts`)
     }
+    schedulePersistedStateWrite()
   } else {
     // 临时房间：房主离开 = 解散房间
     if (room.hostId === peer.id) {
@@ -841,24 +1034,27 @@ setInterval(() => {
   }
 
   for (const [roomId, room] of rooms) {
-    if (room.latestSnapshot && room.latestSnapshot.expiresAt <= now) {
+    if (room.latestSnapshot && !room.latestSnapshot.pinned && room.latestSnapshot.expiresAt <= now) {
       const expiredSnapshot = room.latestSnapshot
       room.latestSnapshot = undefined
       void deleteSnapshot(expiredSnapshot)
+      schedulePersistedStateWrite()
     }
 
-    if (room.type === 'persistent' && room.peers.size === 0 && room.emptyAt) {
+    if (room.type === 'persistent' && !room.pinned && room.peers.size === 0 && room.emptyAt) {
       if (now - room.emptyAt > PERSISTENT_ROOM_TTL) {
         void deleteSnapshot(room.latestSnapshot)
         codeToRoom.delete(room.code)
         rooms.delete(roomId)
         console.log(`[Room] Persistent room ${room.code} expired (7d TTL)`)
+        schedulePersistedStateWrite()
       }
     }
   }
 }, 10 * 60 * 1000)
 
 server.listen(PORT, () => {
+  void loadPersistedState().catch(() => {})
   void fsp.mkdir(SNAPSHOT_BASE_DIR, { recursive: true }).catch(() => {})
   console.log(`[Signaling] Server running on port ${PORT}`)
   console.log(`[Signaling] CF TURN: ${CF_TURN_KEY_ID ? 'configured' : 'not configured'}`)

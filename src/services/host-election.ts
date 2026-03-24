@@ -71,6 +71,7 @@ export class HostElection {
   private state: ElectionState = 'idle'
   private worldMeta: WorldMeta | null = null
   private currentHost: HostInfo | null = null
+  private roomPinned = false
   private myRole: 'host' | 'client' | null = null
   private roomPeers: { id: string, name: string }[] = []
 
@@ -86,6 +87,7 @@ export class HostElection {
   getHost(): HostInfo | null { return this.currentHost }
   getRole(): 'host' | 'client' | null { return this.myRole }
   getWorldMeta(): WorldMeta | null { return this.worldMeta }
+  getRoomPinned(): boolean { return this.roomPinned }
   getRoomPeers(): { id: string, name: string }[] { return this.roomPeers }
 
   setWorldMeta(meta: WorldMeta): void { this.worldMeta = meta }
@@ -153,6 +155,7 @@ export class HostElection {
     if (hostInfo.worldMeta) {
       this.worldMeta = hostInfo.worldMeta
     }
+    this.roomPinned = !!hostInfo.roomPinned
   }
 
   /**
@@ -341,6 +344,12 @@ export class HostElection {
     }
     this.signaling.on('peer-left', onPeerLeft)
     this.cleanups.push(() => this.signaling.off('peer-left', onPeerLeft))
+
+    const onRoomPinnedUpdated = (msg: any) => {
+      this.roomPinned = !!msg.roomPinned
+    }
+    this.signaling.on('room-pinned-updated', onRoomPinnedUpdated)
+    this.cleanups.push(() => this.signaling.off('room-pinned-updated', onRoomPinnedUpdated))
 
     // room-closed
     const onRoomClosed = () => {
