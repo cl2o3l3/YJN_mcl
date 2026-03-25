@@ -1,10 +1,12 @@
 import Store from 'electron-store'
 import type { LauncherSettings } from '../../src/types'
 import { getDefaultSettings } from '../../src/types'
+import { parseStoreJson } from './store-utils'
 
 const store = new Store<LauncherSettings>({
   name: 'settings',
-  defaults: getDefaultSettings()
+  defaults: getDefaultSettings(),
+  deserialize: (value) => parseStoreJson<LauncherSettings>(value)
 })
 
 export function loadSettings(): LauncherSettings {

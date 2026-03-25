@@ -8,6 +8,7 @@ import type { ConnectionTier, P2PPeer, TurnServerConfig } from '../types'
 import type { PeerConnection } from './connection-strategy'
 import { attemptConnection } from './connection-strategy'
 import { SignalingClient } from './signaling-client'
+import { decodeP2PControl, encodeP2PControl } from './p2p-control'
 
 export interface WebRTCManagerConfig {
   stunServers: string[]
@@ -199,19 +200,19 @@ export class WebRTCManager {
     if (!managed.connection || managed.state !== 'connected') return
     const now = performance.now()
     this.rttPending.set(managed.peerId, now)
-    managed.connection.send(new TextEncoder().encode('__RTT_PING'))
+    managed.connection.send(encodeP2PControl('rtt-ping'))
   }
 
   /** 处理收到的 RTT 消息，返回 true 表示是 RTT 控制消息 */
   handleRttMessage(peerId: string, data: Uint8Array): boolean {
-    const text = new TextDecoder().decode(data)
-    if (text === '__RTT_PING') {
+    const control = decodeP2PControl(data)
+    if (control?.type === 'rtt-ping') {
       // 收到 ping，回 pong
       const managed = this.peers.get(peerId)
-      managed?.connection?.send(new TextEncoder().encode('__RTT_PONG'))
+      managed?.connection?.send(encodeP2PControl('rtt-pong'))
       return true
     }
-    if (text === '__RTT_PONG') {
+    if (control?.type === 'rtt-pong') {
       // 收到 pong，计算 RTT
       const sendTime = this.rttPending.get(peerId)
       if (sendTime !== undefined) {

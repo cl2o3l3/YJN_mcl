@@ -8,6 +8,7 @@
  */
 
 import type { InstalledResource } from '../types'
+import { decodeP2PControl, encodeP2PControl } from './p2p-control'
 
 export interface ModSyncDiff {
   missing: InstalledResource[]    // 客人缺失的
@@ -15,41 +16,34 @@ export interface ModSyncDiff {
   matched: InstalledResource[]    // 双方都有的
 }
 
-const SYNC_PREFIX = '__MOD_SYNC:'
-const SYNC_ACK = '__MOD_SYNC_ACK'
-
 /**
  * 将 mod 列表编码为发送消息
  */
 export function encodeModList(mods: InstalledResource[]): Uint8Array {
-  return new TextEncoder().encode(SYNC_PREFIX + JSON.stringify(mods))
+  return encodeP2PControl('mod-sync', mods)
 }
 
 /**
  * 尝试解析 mod 同步消息，非同步消息返回 null
  */
 export function decodeModSyncMessage(data: Uint8Array): InstalledResource[] | null {
-  const text = new TextDecoder().decode(data)
-  if (!text.startsWith(SYNC_PREFIX)) return null
-  try {
-    return JSON.parse(text.slice(SYNC_PREFIX.length))
-  } catch {
-    return null
-  }
+  const control = decodeP2PControl(data)
+  if (control?.type !== 'mod-sync' || !Array.isArray(control.payload)) return null
+  return control.payload as InstalledResource[]
 }
 
 /**
  * 判断是否是 ACK 消息
  */
 export function isModSyncAck(data: Uint8Array): boolean {
-  return new TextDecoder().decode(data) === SYNC_ACK
+  return decodeP2PControl(data)?.type === 'mod-sync-ack'
 }
 
 /**
  * 编码 ACK
  */
 export function encodeModSyncAck(): Uint8Array {
-  return new TextEncoder().encode(SYNC_ACK)
+  return encodeP2PControl('mod-sync-ack')
 }
 
 /**

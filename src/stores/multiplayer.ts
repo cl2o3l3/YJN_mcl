@@ -10,6 +10,7 @@ import { SignalingClient } from '../services/signaling-client'
 import { WebRTCManager } from '../services/webrtc-manager'
 import { createManualOffer, acceptManualOffer, fetchTurnCredentials } from '../services/manual-exchange'
 import { encodeModList, decodeModSyncMessage, isModSyncAck, encodeModSyncAck, diffModLists, type ModSyncDiff } from '../services/mod-sync'
+import { decodeP2PControl, encodeP2PControl } from '../services/p2p-control'
 import type { InstalledResource } from '../types'
 import { useSettingsStore } from './settings'
 
@@ -218,10 +219,10 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
           try {
             await window.api.p2p.startHostProxy(p.id, port)
             addLog(`已为 ${p.name} 启动代理 → MC:${port}`)
-            webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__MC_LAN_READY'))
+            webrtcManager?.sendToPeer(p.id, encodeP2PControl('mc-lan-ready'))
           } catch (proxyErr: any) {
             addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
-            webrtcManager?.sendToPeer(p.id, new TextEncoder().encode('__PROXY_FAILED'))
+            webrtcManager?.sendToPeer(p.id, encodeP2PControl('proxy-failed'))
           }
         }
       }
@@ -319,10 +320,10 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
           await window.api.p2p.startHostProxy(peerId, mcLanPort.value)
           addLog(`已为 ${peerId.substring(0, 6)} 启动代理 → MC:${mcLanPort.value}`)
           // 通知客人：MC LAN 已就绪
-          webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__MC_LAN_READY'))
+          webrtcManager!.sendToPeer(peerId, encodeP2PControl('mc-lan-ready'))
         } catch (proxyErr: any) {
           addLog(`代理启动失败: ${proxyErr.message}`)
-          webrtcManager!.sendToPeer(peerId, new TextEncoder().encode('__PROXY_FAILED'))
+          webrtcManager!.sendToPeer(peerId, encodeP2PControl('proxy-failed'))
         }
       } else if (role.value === 'guest') {
         // 先启动本地代理，但不广播 LAN
@@ -349,8 +350,8 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
     webrtcManager.on('data-from-peer', async (_peerId: string, data: Uint8Array) => {
       // 检查控制消息
-      const text = new TextDecoder().decode(data)
-      if (text === '__MC_LAN_READY' && role.value === 'guest') {
+      const control = decodeP2PControl(data)
+      if (control?.type === 'mc-lan-ready' && role.value === 'guest') {
         addLog('房主已开启 MC 局域网')
         if (localPort.value > 0) {
           await window.api.p2p.startLanBroadcast(_peerId, localPort.value, 'P2P 联机')
@@ -362,13 +363,13 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         }
         return
       }
-      if (text === '__PROXY_FAILED' && role.value === 'guest') {
+      if (control?.type === 'proxy-failed' && role.value === 'guest') {
         addLog('⚠️ 房主端代理启动失败，连接可能不可用')
         error.value = '房主端代理启动失败'
         return
       }
       // Mod 同步消息
-      if (text.startsWith('__MOD_SYNC:')) {
+      if (control?.type === 'mod-sync') {
         // 客人端存储房主的 mod 列表，待 UI 获取 gameDir 后进行 diff
         const remoteMods = decodeModSyncMessage(data)
         if (remoteMods) {
@@ -506,7 +507,7 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
       await window.api.p2p.startHostProxy(peerId, port)
       addLog('已启动代理')
       if (dc.readyState === 'open') {
-        dc.send(new TextEncoder().encode('__MC_LAN_READY'))
+        dc.send(encodeP2PControl('mc-lan-ready') as unknown as ArrayBufferView<ArrayBuffer>)
       }
     }
 
@@ -554,8 +555,8 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     // DC → MC (含控制消息处理)
     dc.onmessage = async (e) => {
       const data = new Uint8Array(e.data as ArrayBuffer)
-      const text = new TextDecoder().decode(data)
-      if (text === '__MC_LAN_READY') {
+      const control = decodeP2PControl(data)
+      if (control?.type === 'mc-lan-ready') {
         addLog('房主已开启 MC 局域网')
         if (localPort.value > 0) {
           await window.api.p2p.startLanBroadcast(peerId, localPort.value, 'P2P 联机')
@@ -567,17 +568,12 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         }
         return
       }
-      if (text === '__PROXY_FAILED') {
+      if (control?.type === 'proxy-failed') {
         addLog('⚠️ 房主端代理启动失败，连接可能不可用')
         error.value = '房主端代理启动失败'
         return
       }
-      if (text === '__RTT_PING') {
-        if (dc.readyState === 'open') dc.send(new TextEncoder().encode('__RTT_PONG'))
-        return
-      }
-      if (text === '__RTT_PONG') return
-      if (text.startsWith('__MOD_SYNC:')) {
+      if (control?.type === 'mod-sync') {
         const remoteMods = decodeModSyncMessage(data)
         if (remoteMods) {
           hostModList.value = remoteMods

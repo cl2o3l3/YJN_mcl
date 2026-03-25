@@ -1,5 +1,6 @@
 import Store from 'electron-store'
 import type { MinecraftAccount, YggdrasilServerInfo } from '../../../src/types'
+import { parseStoreJson } from '../store-utils'
 
 const DEFAULT_CLIENT_ID = 'c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb'
 
@@ -10,7 +11,13 @@ const store = new Store<{
   yggdrasilServers: YggdrasilServerInfo[]
 }>({
   name: 'accounts',
-  defaults: { accounts: [], selectedId: '', clientId: DEFAULT_CLIENT_ID, yggdrasilServers: [] }
+  defaults: { accounts: [], selectedId: '', clientId: DEFAULT_CLIENT_ID, yggdrasilServers: [] },
+  deserialize: (value) => parseStoreJson<{
+    accounts: MinecraftAccount[]
+    selectedId: string
+    clientId: string
+    yggdrasilServers: YggdrasilServerInfo[]
+  }>(value)
 })
 
 export function getAllAccounts(): MinecraftAccount[] {

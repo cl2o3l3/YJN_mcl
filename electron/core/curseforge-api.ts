@@ -7,6 +7,9 @@ import type {
 
 const BASE = 'https://api.curseforge.com/v1'
 const GAME_ID = 432 // Minecraft: Java Edition
+const REQUEST_TIMEOUT_MS = 30_000
+const REQUEST_RETRY_COUNT = 3
+const FILE_INFO_BATCH_SIZE = 50
 
 // CurseForge classId 映射
 const TYPE_TO_CLASS: Record<ResourceType, number> = {
@@ -59,33 +62,91 @@ export function isCurseForgeConfigured(): boolean {
 
 // ========== HTTP 工具 ==========
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ECONNABORTED|socket hang up|timeout)/i.test(message)
+}
+
+function parseErrorBody(chunks: string[], statusCode?: number): Error {
+  return new Error(`CurseForge API error: ${statusCode} ${chunks.join('')}`)
+}
+
+async function requestWithRetry<T>(requestName: string, fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < REQUEST_RETRY_COUNT; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      if (!isRetryableNetworkError(error) || attempt === REQUEST_RETRY_COUNT - 1) {
+        throw error
+      }
+      const delay = 500 * Math.pow(2, attempt)
+      console.warn(`[curseforge] ${requestName} failed, retrying in ${delay}ms:`, error instanceof Error ? error.message : String(error))
+      await sleep(delay)
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+async function requestJson<T>(method: 'GET' | 'POST', url: string, body?: string): Promise<T> {
+  const parsed = new URL(url)
+
+  const responseBody = await new Promise<string>((resolve, reject) => {
+    const req = https.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: parsed.pathname + parsed.search,
+      method,
+      headers: {
+        'x-api-key': apiKey || DEFAULT_CF_KEY,
+        'Accept': 'application/json',
+        'User-Agent': 'YJN-Launcher',
+        ...(body ? {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        } : {})
+      },
+      timeout: REQUEST_TIMEOUT_MS,
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        const errChunks: string[] = []
+        res.on('data', (d: Buffer) => errChunks.push(d.toString()))
+        res.on('end', () => reject(parseErrorBody(errChunks, res.statusCode)))
+        return
+      }
+
+      let data = ''
+      res.on('data', (d: Buffer) => { data += d.toString() })
+      res.on('end', () => resolve(data))
+      res.on('error', reject)
+    })
+
+    req.on('error', reject)
+    req.on('timeout', () => {
+      req.destroy(new Error(`CurseForge request timeout: ${method} ${url}`))
+    })
+
+    if (body) req.write(body)
+    req.end()
+  })
+
+  return JSON.parse(responseBody) as T
+}
+
 async function cfFetch<T>(endpoint: string): Promise<T> {
   const key = apiKey || DEFAULT_CF_KEY
   if (!key) throw new Error('CurseForge API key not configured')
   const url = endpoint.startsWith('http') ? endpoint : `${BASE}${endpoint}`
 
-  // 使用 Node https 模块确保 header 正确传递
-  const body = await new Promise<string>((resolve, reject) => {
-    const req = https.get(url, {
-      headers: {
-        'x-api-key': key,
-        'Accept': 'application/json',
-      }
-    }, (res) => {
-      if (res.statusCode && res.statusCode >= 400) {
-        let errBody = ''
-        res.on('data', (d: Buffer) => errBody += d.toString())
-        res.on('end', () => reject(new Error(`CurseForge API error: ${res.statusCode} ${errBody}`)))
-        return
-      }
-      let data = ''
-      res.on('data', (d: Buffer) => data += d.toString())
-      res.on('end', () => resolve(data))
-    })
-    req.on('error', reject)
-  })
-
-  return JSON.parse(body) as T
+  return requestWithRetry(`GET ${endpoint}`, () => requestJson<T>('GET', url))
 }
 
 async function cfPost<T>(endpoint: string, body: unknown): Promise<T> {
@@ -94,35 +155,7 @@ async function cfPost<T>(endpoint: string, body: unknown): Promise<T> {
   const url = endpoint.startsWith('http') ? endpoint : `${BASE}${endpoint}`
   const postData = JSON.stringify(body)
 
-  const responseBody = await new Promise<string>((resolve, reject) => {
-    const parsed = new URL(url)
-    const req = https.request({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      method: 'POST',
-      headers: {
-        'x-api-key': key,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
-      }
-    }, (res) => {
-      if (res.statusCode && res.statusCode >= 400) {
-        let errBody = ''
-        res.on('data', (d: Buffer) => errBody += d.toString())
-        res.on('end', () => reject(new Error(`CurseForge API error: ${res.statusCode} ${errBody}`)))
-        return
-      }
-      let data = ''
-      res.on('data', (d: Buffer) => data += d.toString())
-      res.on('end', () => resolve(data))
-    })
-    req.on('error', reject)
-    req.write(postData)
-    req.end()
-  })
-
-  return JSON.parse(responseBody) as T
+  return requestWithRetry(`POST ${endpoint}`, () => requestJson<T>('POST', url, postData))
 }
 
 // ========== CurseForge → 统一类型映射 ==========
@@ -379,26 +412,60 @@ function buildForgeCdnFallbackUrls(fileId: number, fileName: string): string[] {
   ]
 }
 
+function mapCfFileInfo(file: CfFile): CurseForgeFileInfo {
+  const sha1 = file.hashes.find(h => h.algo === 1)?.value
+  const cdnFallbacks = buildForgeCdnFallbackUrls(file.id, file.fileName)
+  const downloadUrl = file.downloadUrl || cdnFallbacks[0]
+  const fallbackUrls = file.downloadUrl
+    ? cdnFallbacks
+    : cdnFallbacks.slice(1)
+
+  return {
+    id: String(file.id),
+    modId: String(file.modId),
+    fileName: file.fileName,
+    fileLength: file.fileLength,
+    downloadUrl,
+    sha1,
+    fallbackUrls: fallbackUrls.length > 0 ? fallbackUrls : undefined,
+  }
+}
+
+async function fetchFileInfoBatchChunk(fileIds: number[]): Promise<CurseForgeFileInfo[]> {
+  if (fileIds.length === 0) return []
+
+  if (fileIds.length <= FILE_INFO_BATCH_SIZE) {
+    const data = await cfPost<{ data: CfFile[] }>('/mods/files', { fileIds })
+    return data.data.map(mapCfFileInfo)
+  }
+
+  const middle = Math.ceil(fileIds.length / 2)
+  const [left, right] = await Promise.all([
+    fetchFileInfoBatchChunk(fileIds.slice(0, middle)),
+    fetchFileInfoBatchChunk(fileIds.slice(middle)),
+  ])
+  return [...left, ...right]
+}
+
 /** 批量获取文件信息 (一次 POST 请求解析所有文件) */
 export async function getFileInfoBatch(fileIds: number[]): Promise<CurseForgeFileInfo[]> {
   if (fileIds.length === 0) return []
 
-  const data = await cfPost<{ data: CfFile[] }>('/mods/files', { fileIds })
-  return data.data.map(file => {
-    const sha1 = file.hashes.find(h => h.algo === 1)?.value
-    const cdnFallbacks = buildForgeCdnFallbackUrls(file.id, file.fileName)
-    const downloadUrl = file.downloadUrl || cdnFallbacks[0]
-    const fallbackUrls = file.downloadUrl
-      ? cdnFallbacks
-      : cdnFallbacks.slice(1)
-    return {
-      id: String(file.id),
-      modId: String(file.modId),
-      fileName: file.fileName,
-      fileLength: file.fileLength,
-      downloadUrl,
-      sha1,
-      fallbackUrls: fallbackUrls.length > 0 ? fallbackUrls : undefined,
+  const uniqueIds = [...new Set(fileIds)]
+  const resultMap = new Map<number, CurseForgeFileInfo>()
+
+  for (let index = 0; index < uniqueIds.length; index += FILE_INFO_BATCH_SIZE) {
+    const chunk = uniqueIds.slice(index, index + FILE_INFO_BATCH_SIZE)
+    const chunkInfos = await fetchFileInfoBatchChunk(chunk)
+    for (const info of chunkInfos) {
+      resultMap.set(Number(info.id), info)
     }
-  })
+  }
+
+  const missingIds = fileIds.filter(id => !resultMap.has(id))
+  if (missingIds.length > 0) {
+    throw new Error(`CurseForge 文件元数据缺失: ${missingIds.slice(0, 10).join(', ')}${missingIds.length > 10 ? ' ...' : ''}`)
+  }
+
+  return fileIds.map(id => resultMap.get(id)!)
 }

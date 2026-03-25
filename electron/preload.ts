@@ -84,11 +84,11 @@ const api = {
       ipcRenderer.on('launch:log', handler)
       return () => ipcRenderer.off('launch:log', handler)
     },
-    onLanPortDetected: (callback: (port: number) => void) => {
-      const handler = (_: unknown, port: number) => callback(port)
-      ipcRenderer.on('launch:lanPortDetected', handler)
-      return () => ipcRenderer.off('launch:lanPortDetected', handler)
-    },
+      onLanPortDetected: (callback: (port: number) => void) => {
+        const handler = (_: unknown, port: number) => callback(port)
+        ipcRenderer.on('launch:lanPortDetected', handler)
+        return () => ipcRenderer.off('launch:lanPortDetected', handler)
+      },
     onExit: (callback: (code: number | null) => void) => {
       const handler = (_: unknown, code: number | null) => callback(code)
       ipcRenderer.on('launch:exit', handler)
@@ -366,4 +366,10 @@ const api = {
 contextBridge.exposeInMainWorld('api', api)
 
 // 类型声明
-export type Api = typeof api
+type LaunchApi = typeof api.launch & {
+  onLanPortDetected: (callback: (port: number) => void) => ReturnType<typeof api.launch.onLog>
+}
+
+export type Api = Omit<typeof api, 'launch'> & {
+  launch: LaunchApi
+}

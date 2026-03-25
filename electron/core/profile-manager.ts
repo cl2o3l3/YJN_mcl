@@ -6,10 +6,12 @@ import type { GameProfile, JvmArgs, ModLoaderInfo, VersionIsolationMode } from '
 import { getDefaultJvmArgs } from '../../src/types'
 import { getDefaultMinecraftDir } from './platform'
 import { loadSettings } from './settings-store'
+import { parseStoreJson } from './store-utils'
 
 const store = new Store<{ profiles: GameProfile[] }>({
   name: 'profiles',
-  defaults: { profiles: [] }
+  defaults: { profiles: [] },
+  deserialize: (value) => parseStoreJson<{ profiles: GameProfile[] }>(value)
 })
 
 function sanitizeDirName(name: string): string {
@@ -31,9 +33,160 @@ function buildIsolatedGameDir(baseGameDir: string, profileId: string, profileNam
   return path.join(baseGameDir, 'instances', `${sanitizeDirName(profileName)}-${profileId.slice(0, 8)}`)
 }
 
+function looksLikeEmbeddedInstanceDir(dirPath: string): boolean {
+  const markers = [
+    'mods',
+    'config',
+    'options.txt',
+    'saves',
+    'resourcepacks',
+    'shaderpacks',
+    'PCL',
+    'launcher_profiles.json'
+  ]
+  return markers.some(marker => fs.existsSync(path.join(dirPath, marker)))
+}
+
+function parseScannedVersion(versionId: string, raw: any): { name: string; modLoader?: ModLoaderInfo } {
+  let modLoader: ModLoaderInfo | undefined
+  let displayName = versionId
+
+  if (raw?.inheritsFrom) {
+    const id = String(raw.id || versionId).toLowerCase()
+    const parentVersion = String(raw.inheritsFrom)
+    if (id.includes('fabric')) {
+      modLoader = { type: 'fabric', version: String(raw.id || versionId) }
+      displayName = `${parentVersion} Fabric`
+    } else if (id.includes('neoforge')) {
+      modLoader = { type: 'neoforge', version: String(raw.id || versionId) }
+      displayName = `${parentVersion} NeoForge`
+    } else if (id.includes('forge')) {
+      modLoader = { type: 'forge', version: String(raw.id || versionId) }
+      displayName = `${parentVersion} Forge`
+    } else if (id.includes('quilt')) {
+      modLoader = { type: 'quilt', version: String(raw.id || versionId) }
+      displayName = `${parentVersion} Quilt`
+    } else {
+      displayName = parentVersion ? `${parentVersion} (${versionId})` : versionId
+    }
+  }
+
+  return { name: displayName, modLoader }
+}
+
+function readVersionDescriptor(gameDir: string, versionId: string): { name: string; modLoader?: ModLoaderInfo } | null {
+  const jsonFile = path.join(gameDir, 'versions', versionId, `${versionId}.json`)
+  if (!fs.existsSync(jsonFile)) return null
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(jsonFile, 'utf-8'))
+    return parseScannedVersion(versionId, raw)
+  } catch {
+    return { name: versionId }
+  }
+}
+
+function createScannedProfile(gameDir: string, versionId: string, name: string, modLoader?: ModLoaderInfo): GameProfile {
+  return {
+    id: randomUUID(),
+    name,
+    gameDir,
+    baseGameDir: gameDir,
+    versionIsolation: 'disabled',
+    versionId,
+    modLoader,
+    javaPath: '',
+    jvmArgs: getDefaultJvmArgs(),
+    windowWidth: 1280,
+    windowHeight: 720,
+    accountId: '',
+    createdAt: Date.now()
+  }
+}
+
+function scanVersionEntries(gameDir: string, existingKeys: Set<string>): GameProfile[] {
+  const versionsDir = path.join(gameDir, 'versions')
+  if (!fs.existsSync(versionsDir)) return []
+
+  const added: GameProfile[] = []
+  const entries = fs.readdirSync(versionsDir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const versionId = entry.name
+    const versionInfo = readVersionDescriptor(gameDir, versionId)
+    if (!versionInfo) continue
+
+    const versionDir = path.join(versionsDir, versionId)
+    const scannedGameDir = looksLikeEmbeddedInstanceDir(versionDir) ? versionDir : gameDir
+
+    const key = `${scannedGameDir}|${versionId}`
+    if (existingKeys.has(key)) continue
+
+    added.push(createScannedProfile(scannedGameDir, versionId, versionInfo.name, versionInfo.modLoader))
+    existingKeys.add(key)
+  }
+
+  return added
+}
+
+function resolveLegacyEmbeddedInstanceDir(profile: GameProfile): string | null {
+  const rootDir = profile.baseGameDir || profile.gameDir
+  if (!rootDir) return null
+
+  const currentDir = profile.gameDir
+  const directVersionDir = path.join(rootDir, 'versions', profile.versionId)
+  if (directVersionDir !== currentDir && looksLikeEmbeddedInstanceDir(directVersionDir)) {
+    return directVersionDir
+  }
+
+  return null
+}
+
+function readLauncherPreferredVersion(gameDir: string): { versionId: string; name?: string } | null {
+  const launcherProfilesPath = path.join(gameDir, 'launcher_profiles.json')
+  if (!fs.existsSync(launcherProfilesPath)) return null
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(launcherProfilesPath, 'utf-8')) as {
+      selectedProfile?: string
+      profiles?: Record<string, { name?: string; lastVersionId?: string }>
+    }
+    const profiles = raw.profiles || {}
+    const selected = raw.selectedProfile ? profiles[raw.selectedProfile] : undefined
+    const fallback = Object.values(profiles).find(profile => typeof profile?.lastVersionId === 'string' && profile.lastVersionId.trim())
+    const preferred = selected && selected.lastVersionId ? selected : fallback
+    if (!preferred?.lastVersionId) return null
+
+    return {
+      versionId: preferred.lastVersionId,
+      name: preferred.name?.trim() || undefined
+    }
+  } catch {
+    return null
+  }
+}
+
+function scanLauncherInstanceDir(instanceDir: string, existingKeys: Set<string>): GameProfile[] {
+  const preferred = readLauncherPreferredVersion(instanceDir)
+  if (!preferred) {
+    return scanVersionEntries(instanceDir, existingKeys)
+  }
+
+  const key = `${instanceDir}|${preferred.versionId}`
+  if (existingKeys.has(key)) return []
+
+  const versionInfo = readVersionDescriptor(instanceDir, preferred.versionId)
+  if (!versionInfo) return scanVersionEntries(instanceDir, existingKeys)
+
+  const instanceName = preferred.name || sanitizeDirName(path.basename(instanceDir)) || preferred.versionId
+  existingKeys.add(key)
+  return [createScannedProfile(instanceDir, preferred.versionId, instanceName, versionInfo.modLoader)]
+}
+
 function normalizeProfile(profile: GameProfile): GameProfile {
   const settings = loadSettings()
-  const baseGameDir = profile.baseGameDir || profile.gameDir || getDefaultMinecraftDir()
+  const migratedBaseGameDir = resolveLegacyEmbeddedInstanceDir(profile) || profile.baseGameDir || profile.gameDir || getDefaultMinecraftDir()
+  const baseGameDir = migratedBaseGameDir
   const versionIsolation: VersionIsolationMode = profile.versionIsolation || (profile.baseGameDir ? 'inherit' : 'disabled')
   const gameDir = isIsolationEnabled(versionIsolation, settings.defaultVersionIsolation)
     ? buildIsolatedGameDir(baseGameDir, profile.id, profile.name)
@@ -158,66 +311,21 @@ export function duplicateProfile(id: string): GameProfile | null {
 
 /** 扫描游戏目录，为发现的已安装版本自动创建实例（跳过已有的） */
 export function scanGameDir(gameDir: string): GameProfile[] {
-  const versionsDir = path.join(gameDir, 'versions')
-  if (!fs.existsSync(versionsDir)) return []
-
   const existing = store.get('profiles')
   const existingKeys = new Set(existing.map(p => `${p.gameDir}|${p.versionId}`))
   const added: GameProfile[] = []
 
-  const entries = fs.readdirSync(versionsDir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const versionId = entry.name
-    const jsonFile = path.join(versionsDir, versionId, `${versionId}.json`)
-    if (!fs.existsSync(jsonFile)) continue
+  added.push(...scanVersionEntries(gameDir, existingKeys))
 
-    const key = `${gameDir}|${versionId}`
-    if (existingKeys.has(key)) continue
-
-    // 尝试读取 version JSON 来判断 modloader
-    let modLoader: ModLoaderInfo | undefined
-    let displayName = versionId
-    try {
-      const raw = JSON.parse(fs.readFileSync(jsonFile, 'utf-8'))
-      if (raw.inheritsFrom) {
-        // 有继承关系 → 带 modloader 的版本
-        const id = (raw.id || versionId).toLowerCase()
-        if (id.includes('fabric')) {
-          modLoader = { type: 'fabric', version: raw.id || versionId }
-          displayName = `${raw.inheritsFrom} Fabric`
-        } else if (id.includes('neoforge')) {
-          modLoader = { type: 'neoforge', version: raw.id || versionId }
-          displayName = `${raw.inheritsFrom} NeoForge`
-        } else if (id.includes('forge')) {
-          modLoader = { type: 'forge', version: raw.id || versionId }
-          displayName = `${raw.inheritsFrom} Forge`
-        } else if (id.includes('quilt')) {
-          modLoader = { type: 'quilt', version: raw.id || versionId }
-          displayName = `${raw.inheritsFrom} Quilt`
-        } else {
-          displayName = raw.inheritsFrom ? `${raw.inheritsFrom} (${versionId})` : versionId
-        }
-      }
-    } catch { /* ignore parse errors */ }
-
-    const profile: GameProfile = {
-      id: randomUUID(),
-      name: displayName,
-      gameDir,
-      baseGameDir: gameDir,
-      versionIsolation: 'disabled',
-      versionId,
-      modLoader,
-      javaPath: '',
-      jvmArgs: getDefaultJvmArgs(),
-      windowWidth: 1280,
-      windowHeight: 720,
-      accountId: '',
-      createdAt: Date.now()
+  const instancesDir = path.join(gameDir, 'instances')
+  if (fs.existsSync(instancesDir)) {
+    const instanceEntries = fs.readdirSync(instancesDir, { withFileTypes: true })
+    for (const entry of instanceEntries) {
+      if (!entry.isDirectory()) continue
+      const instanceDir = path.join(instancesDir, entry.name)
+      if (!fs.existsSync(path.join(instanceDir, 'versions'))) continue
+      added.push(...scanLauncherInstanceDir(instanceDir, existingKeys))
     }
-    added.push(profile)
-    existingKeys.add(key)
   }
 
   if (added.length > 0) {

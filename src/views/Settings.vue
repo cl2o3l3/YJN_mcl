@@ -118,7 +118,12 @@ async function handleAddGameDir() {
 }
 
 function profileCountForDir(dir: string): number {
-  return profiles.profiles.filter(p => p.gameDir === dir).length
+  const normalizedDir = dir.replace(/[\\/]+$/, '').toLowerCase()
+  const prefix = normalizedDir + '\\'
+  return profiles.profiles.filter((profile) => {
+    const profileDir = (profile.baseGameDir || profile.gameDir).replace(/[\\/]+$/, '').toLowerCase()
+    return profileDir === normalizedDir || profileDir.startsWith(prefix)
+  }).length
 }
 
 const themeOptions = [

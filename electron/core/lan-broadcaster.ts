@@ -8,6 +8,7 @@
  */
 
 import * as dgram from 'dgram'
+import * as os from 'node:os'
 
 const MC_LAN_MULTICAST = '224.0.2.60'
 const MC_LAN_PORT = 4445
@@ -21,6 +22,43 @@ interface BroadcastEntry {
 }
 
 const activeBroadcasts = new Map<string, BroadcastEntry>()
+
+function toBroadcastAddress(address: string, netmask: string): string | null {
+  const addressParts = address.split('.').map(Number)
+  const netmaskParts = netmask.split('.').map(Number)
+  if (addressParts.length !== 4 || netmaskParts.length !== 4) return null
+  if (addressParts.some(Number.isNaN) || netmaskParts.some(Number.isNaN)) return null
+
+  const broadcastParts = addressParts.map((part, index) => (part | (~netmaskParts[index] & 0xff)) & 0xff)
+  return broadcastParts.join('.')
+}
+
+function collectAnnouncementTargets(): string[] {
+  const targets = new Set<string>([MC_LAN_MULTICAST, '255.255.255.255'])
+
+  const interfaces = os.networkInterfaces()
+  for (const iface of Object.values(interfaces)) {
+    if (!iface) continue
+    for (const info of iface) {
+      if (info.family !== 'IPv4' || info.internal || !info.address || !info.netmask) continue
+      const broadcast = toBroadcastAddress(info.address, info.netmask)
+      if (broadcast) targets.add(broadcast)
+    }
+  }
+
+  return [...targets]
+}
+
+function sendAnnouncement(socket: dgram.Socket, message: Buffer) {
+  const targets = collectAnnouncementTargets()
+  for (const target of targets) {
+    socket.send(message, 0, message.length, MC_LAN_PORT, target, (err) => {
+      if (err) {
+        console.warn(`[LAN Broadcast] Send failed to ${target}:`, err.message)
+      }
+    })
+  }
+}
 
 /**
  * 开始广播一个伪造的 LAN 游戏
@@ -41,17 +79,18 @@ export function startLanBroadcast(id: string, port: number, motd: string): void 
 
   socket.bind(0, () => {
     try {
+      socket.setBroadcast(true)
       socket.setMulticastTTL(1)
-      socket.setMulticastLoopback(false)
+      socket.setMulticastLoopback(true)
     } catch { /* 部分系统不支持 */ }
 
     // 立即发送一次
-    socket.send(message, 0, message.length, MC_LAN_PORT, MC_LAN_MULTICAST)
+    sendAnnouncement(socket, message)
   })
 
   const timer = setInterval(() => {
     try {
-      socket.send(message, 0, message.length, MC_LAN_PORT, MC_LAN_MULTICAST)
+      sendAnnouncement(socket, message)
     } catch { /* 忽略 */ }
   }, BROADCAST_INTERVAL)
 
