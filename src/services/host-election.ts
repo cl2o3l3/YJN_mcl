@@ -59,6 +59,8 @@ export interface ElectionEvents {
   onTransferProgress: (progress: TransferProgress) => void
   /** 检查本地是否有缓存存档 */
   onCheckLocalSave: (worldName: string) => Promise<boolean>
+  /** 房间常驻状态变化 */
+  onRoomPinnedChange: (pinned: boolean) => void
   /** 日志 */
   onLog: (message: string) => void
 }
@@ -100,6 +102,11 @@ export class HostElection {
   private setHost(host: HostInfo | null) {
     this.currentHost = host
     this.events.onHostChange(host)
+  }
+
+  private setRoomPinned(pinned: boolean) {
+    this.roomPinned = pinned
+    this.events.onRoomPinnedChange(pinned)
   }
 
   // ========== 上线流程 ==========
@@ -155,7 +162,7 @@ export class HostElection {
     if (hostInfo.worldMeta) {
       this.worldMeta = hostInfo.worldMeta
     }
-    this.roomPinned = !!hostInfo.roomPinned
+    this.setRoomPinned(!!hostInfo.roomPinned)
   }
 
   /**
@@ -175,6 +182,7 @@ export class HostElection {
     const result = await createPromise as any
     const roomCode = result.roomCode
     this.signaling.setRoomId(result.roomId)
+    this.setRoomPinned(!!result.room?.pinned)
 
     // 不再立即 becomeHost，等待 LAN 检测
     this.setState('waiting-host')
@@ -346,7 +354,7 @@ export class HostElection {
     this.cleanups.push(() => this.signaling.off('peer-left', onPeerLeft))
 
     const onRoomPinnedUpdated = (msg: any) => {
-      this.roomPinned = !!msg.roomPinned
+      this.setRoomPinned(!!msg.roomPinned)
     }
     this.signaling.on('room-pinned-updated', onRoomPinnedUpdated)
     this.cleanups.push(() => this.signaling.off('room-pinned-updated', onRoomPinnedUpdated))
@@ -476,6 +484,7 @@ export class HostElection {
     this.myRole = null
     this.currentHost = null
     this.worldMeta = null
+    this.roomPinned = false
   }
 
   destroy(): void {

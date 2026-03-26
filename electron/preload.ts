@@ -84,15 +84,15 @@ const api = {
       ipcRenderer.on('launch:log', handler)
       return () => ipcRenderer.off('launch:log', handler)
     },
-      onLanPortDetected: (callback: (port: number) => void) => {
-        const handler = (_: unknown, port: number) => callback(port)
-        ipcRenderer.on('launch:lanPortDetected', handler)
-        return () => ipcRenderer.off('launch:lanPortDetected', handler)
-      },
     onExit: (callback: (code: number | null) => void) => {
       const handler = (_: unknown, code: number | null) => callback(code)
       ipcRenderer.on('launch:exit', handler)
       return () => ipcRenderer.off('launch:exit', handler)
+    },
+    onLanPortDetected: (callback: (port: number) => void) => {
+      const handler = (_: unknown, port: number) => callback(port)
+      ipcRenderer.on('launch:lanPortDetected', handler)
+      return () => ipcRenderer.off('launch:lanPortDetected', handler)
     },
   },
 
@@ -248,6 +248,10 @@ const api = {
       ipcRenderer.invoke('p2p:sendToMc', proxyId, data) as Promise<void>,
     destroyProxy: (proxyId: string) =>
       ipcRenderer.invoke('p2p:destroyProxy', proxyId) as Promise<void>,
+    resetHostProxy: (proxyId: string) =>
+      ipcRenderer.invoke('p2p:resetHostProxy', proxyId) as Promise<void>,
+    connectHostProxy: (proxyId: string) =>
+      ipcRenderer.invoke('p2p:connectHostProxy', proxyId) as Promise<void>,
     destroyAllProxies: () =>
       ipcRenderer.invoke('p2p:destroyAllProxies') as Promise<void>,
     startLanBroadcast: (id: string, port: number, motd: string) =>
@@ -366,10 +370,4 @@ const api = {
 contextBridge.exposeInMainWorld('api', api)
 
 // 类型声明
-type LaunchApi = typeof api.launch & {
-  onLanPortDetected: (callback: (port: number) => void) => ReturnType<typeof api.launch.onLog>
-}
-
-export type Api = Omit<typeof api, 'launch'> & {
-  launch: LaunchApi
-}
+export type Api = typeof api

@@ -403,13 +403,15 @@ export type SignalingMessage =
   | { type: 'error'; message: string }
   // 共享世界 (persistent room)
   | { type: 'create-persistent-room'; playerName: string; worldMeta: { worldName: string; mcVersion: string; modLoader?: { type: string; version: string } } }
-  | { type: 'persistent-room-created'; roomId: string; roomCode: string }
+  | { type: 'persistent-room-created'; roomId: string; roomCode: string; room?: { pinned?: boolean } }
   | { type: 'register-host'; mcPort: number }
   | { type: 'host-registered' }
   | { type: 'unregister-host' }
   | { type: 'host-unregistered' }
+  | { type: 'set-room-pinned'; pinned: boolean }
+  | { type: 'room-pinned-updated'; roomPinned: boolean; pinnedAt?: number; snapshot?: { snapshotId: string; generation: number; pinned?: boolean } | null }
   | { type: 'query-host' }
-  | { type: 'host-info'; host: { peerId: string; peerName: string; mcPort?: number } | null; worldMeta?: { worldName: string; mcVersion: string; modLoader?: { type: string; version: string } } }
+  | { type: 'host-info'; host: { peerId: string; peerName: string; mcPort?: number } | null; roomPinned?: boolean; worldMeta?: { worldName: string; mcVersion: string; modLoader?: { type: string; version: string } } }
   | { type: 'host-changed'; host: { peerId: string; peerName: string; mcPort?: number } | null }
   | { type: 'host-conflict' }
   | { type: 'save-offer'; targetPeerId: string; size: number; sha1: string }

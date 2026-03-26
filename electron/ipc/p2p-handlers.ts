@@ -7,7 +7,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import {
   createHostProxy, createClientProxy,
   getHostProxy, getClientProxy,
-  destroyProxy, destroyAllProxies
+  destroyProxy, destroyAllProxies, resetHostProxy, connectHostProxy
 } from '../core/tcp-proxy'
 import { startLanDetector, stopLanDetector, parseLanPortFromLog } from '../core/lan-detector'
 import { startLanBroadcast, stopLanBroadcast, stopAllLanBroadcasts } from '../core/lan-broadcaster'
@@ -106,6 +106,14 @@ export function registerP2pHandlers() {
 
   ipcMain.handle('p2p:destroyProxy', safe((_, proxyId: string) => {
     destroyProxy(proxyId)
+  }))
+
+  ipcMain.handle('p2p:resetHostProxy', safe((_, proxyId: string) => {
+    resetHostProxy(proxyId)
+  }))
+
+  ipcMain.handle('p2p:connectHostProxy', safe((_, proxyId: string) => {
+    connectHostProxy(proxyId)
   }))
 
   ipcMain.handle('p2p:destroyAllProxies', safe(() => {

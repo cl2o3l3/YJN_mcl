@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs'
 import type { VersionJson, VersionLibrary, LibraryRule, DownloadTask } from '../../src/types'
 import { getOSName, getArch, mavenToPath, getClasspathSeparator } from './platform'
 import { mirrorLibraryUrl, mirrorClientUrl } from './mirror-manager'
+import { getVersionPaths } from './version-manager'
 
 /** 判断一个库是否适用于当前平台 */
 export function isLibraryAllowed(lib: VersionLibrary): boolean {
@@ -119,11 +120,11 @@ export function collectNativeTasks(
 /** 收集客户端 JAR 下载任务 */
 export function collectClientTask(
   versionJson: VersionJson,
-  versionsDir: string
+  gameDir: string
 ): DownloadTask | null {
   const dl = versionJson.downloads?.client
   if (!dl) return null
-  const destPath = path.join(versionsDir, versionJson.id, `${versionJson.id}.jar`)
+  const destPath = getVersionPaths(gameDir, versionJson.id).jarPath
   if (fs.existsSync(destPath)) return null
   const mirrored = mirrorClientUrl(dl.url)
   return {
@@ -185,7 +186,7 @@ export async function extractNatives(
 export function buildClasspath(
   versionJson: VersionJson,
   librariesDir: string,
-  versionsDir: string
+  gameDir: string
 ): string {
   const sep = getClasspathSeparator()
   const paths: string[] = []
@@ -203,12 +204,12 @@ export function buildClasspath(
   }
 
   // 客户端 JAR
-  const clientJar = path.join(versionsDir, versionJson.id, `${versionJson.id}.jar`)
+  const clientJar = getVersionPaths(gameDir, versionJson.id).jarPath
   // inheritsFrom 的情况: 客户端 JAR 可能在父版本目录
   if (fs.existsSync(clientJar)) {
     paths.push(clientJar)
   } else if (versionJson.inheritsFrom) {
-    const parentJar = path.join(versionsDir, versionJson.inheritsFrom, `${versionJson.inheritsFrom}.jar`)
+    const parentJar = getVersionPaths(gameDir, versionJson.inheritsFrom).jarPath
     if (fs.existsSync(parentJar)) paths.push(parentJar)
   }
 

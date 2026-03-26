@@ -211,6 +211,7 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     initWebRTC()
 
     const handleHostLanPortDetected = async (port: number, source: 'broadcast' | 'log' = 'broadcast') => {
+      if (source === 'broadcast' && mcLanPort.value > 0) return
       if (mcLanPort.value === port) return
       mcLanPort.value = port
       addLog(source === 'log' ? `从游戏日志识别到 MC LAN 端口: ${port}` : `检测到 MC LAN 端口: ${port}`)
@@ -330,6 +331,9 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         const result = await window.api.p2p.startClientProxy(peerId)
         localPort.value = result.port
         addLog(`本地代理端口: ${result.port}，等待房主开启 MC 局域网...`)
+        setupProxyLifecycleBridge(peerId, (data) => {
+          webrtcManager?.sendToPeer(peerId, data)
+        })
       }
 
       // 桥接 TCP 代理数据 ↔ WebRTC
@@ -357,7 +361,7 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
           await window.api.p2p.startLanBroadcast(_peerId, localPort.value, 'P2P 联机')
           addLog('MC 多人游戏列表中已自动显示服务器')
           try {
-            await navigator.clipboard.writeText(`localhost:${localPort.value}`)
+            await navigator.clipboard.writeText(`127.0.0.1:${localPort.value}`)
             addLog('连接地址已自动复制到剪贴板')
           } catch { /* 剪贴板不可用 */ }
         }
@@ -366,6 +370,13 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
       if (control?.type === 'proxy-failed' && role.value === 'guest') {
         addLog('⚠️ 房主端代理启动失败，连接可能不可用')
         error.value = '房主端代理启动失败'
+        return
+      }
+      if ((control?.type === 'mc-client-connected' || control?.type === 'mc-client-disconnected') && role.value === 'host') {
+        await window.api.p2p.resetHostProxy(_peerId)
+        if (control.type === 'mc-client-connected') {
+          await window.api.p2p.connectHostProxy(_peerId)
+        }
         return
       }
       // Mod 同步消息
@@ -396,6 +407,20 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
       }
     })
     cleanupFns.push(unsub)
+  }
+
+  function setupProxyLifecycleBridge(proxyId: string, send: (data: Uint8Array) => void) {
+    const unsubConnected = window.api.p2p.onMcConnected((id: string) => {
+      if (id === proxyId) {
+        send(encodeP2PControl('mc-client-connected'))
+      }
+    })
+    const unsubDisconnected = window.api.p2p.onMcDisconnected((id: string) => {
+      if (id === proxyId) {
+        send(encodeP2PControl('mc-client-disconnected'))
+      }
+    })
+    cleanupFns.push(unsubConnected, unsubDisconnected)
   }
 
   // ========== 手动交换模式 ==========
@@ -526,8 +551,16 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     cleanupFns.push(unsubLaunchLan)
 
     // DC → MC
-    dc.onmessage = (e) => {
+    dc.onmessage = async (e) => {
       const data = new Uint8Array(e.data as ArrayBuffer)
+      const control = decodeP2PControl(data)
+      if ((control?.type === 'mc-client-connected' || control?.type === 'mc-client-disconnected') && role.value === 'host') {
+        await window.api.p2p.resetHostProxy(peerId)
+        if (control.type === 'mc-client-connected') {
+          await window.api.p2p.connectHostProxy(peerId)
+        }
+        return
+      }
       if (isModSyncAck(data)) {
         addLog('客人已确认收到 mod 列表')
         return
@@ -551,6 +584,11 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     const result = await window.api.p2p.startClientProxy(peerId)
     localPort.value = result.port
     addLog(`本地代理端口: ${result.port}，等待房主开启 MC 局域网...`)
+    setupProxyLifecycleBridge(peerId, (data) => {
+      if (dc.readyState === 'open') {
+        dc.send(data as unknown as ArrayBufferView<ArrayBuffer>)
+      }
+    })
 
     // DC → MC (含控制消息处理)
     dc.onmessage = async (e) => {
@@ -562,7 +600,7 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
           await window.api.p2p.startLanBroadcast(peerId, localPort.value, 'P2P 联机')
           addLog('MC 多人游戏列表中已自动显示服务器')
           try {
-            await navigator.clipboard.writeText(`localhost:${localPort.value}`)
+            await navigator.clipboard.writeText(`127.0.0.1:${localPort.value}`)
             addLog('连接地址已自动复制到剪贴板')
           } catch { /* 剪贴板不可用 */ }
         }

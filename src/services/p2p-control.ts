@@ -3,6 +3,8 @@ const MAGIC = new Uint8Array([0x59, 0x4a, 0x4e, 0x01])
 export type P2PControlType =
   | 'mc-lan-ready'
   | 'proxy-failed'
+  | 'mc-client-connected'
+  | 'mc-client-disconnected'
   | 'rtt-ping'
   | 'rtt-pong'
   | 'mod-sync'

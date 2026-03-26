@@ -9,8 +9,8 @@ import { ref, computed, watch } from 'vue'
 import { SignalingClient } from '../services/signaling-client'
 import { HostElection, type ElectionState, type HostInfo } from '../services/host-election'
 import { WebRTCManager } from '../services/webrtc-manager'
-import { decodeP2PControl, encodeP2PControl } from '../services/p2p-control'
 import { SaveSender, SaveReceiver, type TransferProgress } from '../services/save-transfer'
+import { decodeP2PControl, encodeP2PControl } from '../services/p2p-control'
 import type { ModLoaderInfo, P2PPeer } from '../types'
 import { useSettingsStore } from './settings'
 
@@ -21,6 +21,7 @@ export interface SharedWorld {
   worldName: string
   mcVersion: string
   modLoader?: ModLoaderInfo
+  pinned?: boolean
   localSavePath?: string   // 本地存档缓存路径
   lastSyncTime?: number
   createdAt: number
@@ -71,6 +72,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
   // 房间码
   const roomCode = ref('')
+  const roomPinned = ref(false)
   const latestSnapshot = ref<SharedWorldSnapshot | null>(null)
 
   // 内部对象
@@ -117,6 +119,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       worldName: world.worldName || '共享房间',
       mcVersion: world.mcVersion || '',
       modLoader: world.modLoader,
+      pinned: !!world.pinned,
       localSavePath: world.localSavePath,
       lastSyncTime: world.lastSyncTime,
       createdAt: world.createdAt || Date.now(),
@@ -276,6 +279,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           ...currentWorld.value,
           roomCode: roomCode.value,
           worldName: packed.worldName,
+          pinned: roomPinned.value,
           lastSyncTime: latestSnapshot.value.uploadedAt,
         })
         addLog(`${reason}：快照已上传 (#${latestSnapshot.value.generation})`)
@@ -358,6 +362,26 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     }
     if (world?.roomCode) {
       upsertWorldInList(world)
+    }
+  })
+
+  watch(roomPinned, (pinned) => {
+    if (!roomCode.value) return
+
+    if (currentWorld.value) {
+      currentWorld.value = {
+        ...currentWorld.value,
+        pinned,
+      }
+    }
+
+    const target = currentWorld.value || worlds.value.find(w => w.roomCode === roomCode.value)
+    if (target) {
+      upsertWorldInList({
+        ...target,
+        roomCode: roomCode.value,
+        pinned,
+      })
     }
   })
 
@@ -529,12 +553,14 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       const code = await election.createWorld(config.playerName)
       roomCode.value = code
+      roomPinned.value = election.getRoomPinned()
       canRegisterAsHostFromLan = true
       upsertWorldInList({
         roomCode: code,
         worldName: currentWorld.value?.worldName || '共享房间',
         mcVersion: currentWorld.value?.mcVersion || '',
         modLoader: currentWorld.value?.modLoader,
+        pinned: roomPinned.value,
         createdAt: currentWorld.value?.createdAt || Date.now(),
       })
       // 房主自己就是第一个成员
@@ -573,6 +599,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       await election.joinWorld(config.roomCode, config.playerName)
       myRole.value = election.getRole()
+      roomPinned.value = election.getRoomPinned()
       canRegisterAsHostFromLan = false
 
       // 从 election 获取已有成员列表 (room-joined.peers) + 自己
@@ -592,6 +619,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           worldName: meta.worldName,
           mcVersion: meta.mcVersion,
           modLoader: meta.modLoader,
+          pinned: roomPinned.value,
           createdAt: Date.now(),
         }
       } else {
@@ -599,6 +627,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           roomCode: config.roomCode,
           worldName: '共享房间',
           mcVersion: '',
+          pinned: roomPinned.value,
           createdAt: Date.now(),
         })
       }
@@ -704,8 +733,18 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
           return false
         }
       },
+      onRoomPinnedChange: (pinned: boolean) => {
+        roomPinned.value = pinned
+      },
       onLog: addLog,
     }
+  }
+
+  async function setRoomPinned(pinned: boolean) {
+    if (!signaling || !roomCode.value) throw new Error('共享世界未连接')
+    signaling.setRoomPinned(pinned)
+    roomPinned.value = pinned
+    addLog(pinned ? '已设为常驻模式' : '已取消常驻模式')
   }
 
   // ========== 离开共享世界 ==========
@@ -814,6 +853,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         const result = await window.api.p2p.startClientProxy(peerId)
         localPort.value = result.port
         addLog(`本地代理端口: ${result.port}，等待房主开启 MC 局域网...`)
+        setupProxyLifecycleBridge(peerId, (controlData) => {
+          webrtcManager?.sendToPeer(peerId, controlData)
+        })
 
         // 监听来自主机的存档传输 (主机迁移时触发)
         const pc = webrtcManager?.getPeerConnection(peerId)
@@ -837,11 +879,12 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       setupDataBridge(peerId)
 
       if (myRole.value === 'host' && currentWorld.value) {
-        webrtcManager!.sendToPeer(peerId, encodeP2PControl('world-meta', {
+        const payload = {
           worldName: currentWorld.value.worldName,
           mcVersion: currentWorld.value.mcVersion,
           modLoader: currentWorld.value.modLoader || null,
-        }))
+        }
+        webrtcManager!.sendToPeer(peerId, encodeP2PControl('world-meta', payload))
       }
     })
 
@@ -863,7 +906,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
       if (control?.type === 'world-meta' && myRole.value === 'client') {
         try {
-          const meta = control.payload as Record<string, any>
+          const meta = (control.payload || {}) as any
           currentWorld.value = {
             roomCode: roomCode.value,
             worldName: meta.worldName || currentWorld.value?.worldName || '共享房间',
@@ -891,6 +934,14 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       if (control?.type === 'proxy-failed' && myRole.value === 'client') {
         addLog('⚠️ 房主端代理启动失败')
         error.value = '房主端代理启动失败'
+        return
+      }
+
+      if ((control?.type === 'mc-client-connected' || control?.type === 'mc-client-disconnected') && myRole.value === 'host') {
+        await window.api.p2p.resetHostProxy(_peerId)
+        if (control.type === 'mc-client-connected') {
+          await window.api.p2p.connectHostProxy(_peerId)
+        }
         return
       }
 
@@ -943,11 +994,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     signaling.on('peer-left', onPeerLeft)
     cleanupFns.push(() => signaling?.off('peer-left', onPeerLeft))
 
-    // 被动 LAN 检测: 任何人在 MC 中开启局域网 → 自动竞选主机
-    window.api.p2p.startLanDetector()
-    const unsubLan = window.api.p2p.onLanGames(async (games: Array<{ port: number }>) => {
-      if (games.length === 0) return
-      const port = games[0].port
+    const handleDetectedLanPort = async (port: number, source: 'broadcast' | 'log' = 'broadcast') => {
       if (mcLanPort.value === port) return
       if (myRole.value !== 'host' && localPort.value > 0 && hostLanActivatedPeerId && port === localPort.value) return
 
@@ -959,10 +1006,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
 
       mcLanPort.value = port
-      addLog(`检测到 MC LAN 端口: ${port}`)
+      addLog(source === 'log' ? `从游戏日志识别到 MC LAN 端口: ${port}` : `检测到 MC LAN 端口: ${port}`)
 
       if (myRole.value !== 'host') {
-        // 尚未成为主机 → 尝试注册为主机
         if (election) {
           try {
             await election.becomeHost(port)
@@ -970,7 +1016,6 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
             if (myRole.value === 'host') {
               canRegisterAsHostFromLan = false
               updateSnapshotSchedule()
-              // 为已连接的 peer 启动代理
               for (const p of peers.value) {
                 if (p.state === 'connected') {
                   try {
@@ -986,21 +1031,33 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
             // becomeHost 失败 (host-conflict), election 已处理状态
           }
         }
-      } else {
-        // 已经是主机，LAN 端口变更 → 更新代理
-        for (const p of peers.value) {
-          if (p.state === 'connected') {
-            try {
-              await window.api.p2p.startHostProxy(p.id, port)
-              webrtcManager?.sendToPeer(p.id, encodeP2PControl('mc-lan-ready'))
-            } catch (proxyErr: any) {
-              addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
-            }
+        return
+      }
+
+      for (const p of peers.value) {
+        if (p.state === 'connected') {
+          try {
+            await window.api.p2p.startHostProxy(p.id, port)
+            webrtcManager?.sendToPeer(p.id, encodeP2PControl('mc-lan-ready'))
+          } catch (proxyErr: any) {
+            addLog(`为 ${p.name} 启动代理失败: ${proxyErr.message}`)
           }
         }
       }
+    }
+
+    // 被动 LAN 检测: 任何人在 MC 中开启局域网 → 自动竞选主机
+    window.api.p2p.startLanDetector()
+    const unsubLan = window.api.p2p.onLanGames(async (games: Array<{ port: number }>) => {
+      if (games.length === 0) return
+      await handleDetectedLanPort(games[0].port, 'broadcast')
     })
     cleanupFns.push(unsubLan)
+
+    const unsubLaunchLan = window.api.launch.onLanPortDetected((port) => {
+      void handleDetectedLanPort(port, 'log')
+    })
+    cleanupFns.push(unsubLaunchLan)
 
     // 监听 host-changed: 当新主机出现时，非主机 peer 自动发起 WebRTC 连接
     const onHostChangedP2P = (msg: any) => {
@@ -1025,6 +1082,20 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
     })
     cleanupFns.push(unsub)
+  }
+
+  function setupProxyLifecycleBridge(proxyId: string, send: (data: Uint8Array) => void) {
+    const unsubConnected = window.api.p2p.onMcConnected((id: string) => {
+      if (id === proxyId) {
+        send(encodeP2PControl('mc-client-connected'))
+      }
+    })
+    const unsubDisconnected = window.api.p2p.onMcDisconnected((id: string) => {
+      if (id === proxyId) {
+        send(encodeP2PControl('mc-client-disconnected'))
+      }
+    })
+    cleanupFns.push(unsubConnected, unsubDisconnected)
   }
 
   /**
@@ -1109,6 +1180,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       transferProgress.value = null
       currentWorld.value = null
       roomCode.value = ''
+      roomPinned.value = false
       peers.value = []
       roomMembers.value = []
       myPeerId.value = ''
@@ -1163,6 +1235,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     transferProgress.value = null
     currentWorld.value = null
     roomCode.value = ''
+    roomPinned.value = false
     error.value = ''
     peers.value = []
     roomMembers.value = []
@@ -1195,6 +1268,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     logs,
     error,
     roomCode,
+    roomPinned,
     peers,
     roomMembers,
     myPeerId,
@@ -1211,6 +1285,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     joinWorld,
     leaveWorld,
     setGameDir,
+    setRoomPinned,
     removeWorldFromList,
 
     // 工具

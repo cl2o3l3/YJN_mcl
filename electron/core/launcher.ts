@@ -2,8 +2,10 @@ import { spawn, ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import type { GameProfile, MinecraftAccount, VersionJson, ArgumentRule } from '../../src/types'
 import { GC_PRESETS } from '../../src/types'
+import { ensureAuthlibInjector, getPrefetchedYggdrasilMetadata } from './authlib-injector'
 import { getOSName, getArch, getClasspathSeparator } from './platform'
 import { buildClasspath } from './library-manager'
+import { getVersionPaths } from './version-manager'
 
 /** 构建完整的 JVM 参数列表 */
 function buildJvmArgs(profile: GameProfile, versionJson: VersionJson, vars: Record<string, string>): string[] {
@@ -91,17 +93,16 @@ function replaceVars(str: string, vars: Record<string, string>): string {
 }
 
 /** 启动 Minecraft */
-export function launchGame(
+export async function launchGame(
   profile: GameProfile,
   versionJson: VersionJson,
   account: MinecraftAccount,
   gameDir: string
-): ChildProcess {
+): Promise<ChildProcess> {
   const librariesDir = path.join(gameDir, 'libraries')
-  const versionsDir = path.join(gameDir, 'versions')
   const assetsDir = path.join(gameDir, 'assets')
-  const nativesDir = path.join(versionsDir, versionJson.id, 'natives')
-  const classpath = buildClasspath(versionJson, librariesDir, versionsDir)
+  const nativesDir = getVersionPaths(gameDir, versionJson.id).nativesDir
+  const classpath = buildClasspath(versionJson, librariesDir, gameDir)
 
   const vars: Record<string, string> = {
     // 认证
@@ -109,7 +110,7 @@ export function launchGame(
     auth_uuid: account.uuid.replace(/-/g, ''),
     auth_access_token: account.accessToken || '0',
     auth_xuid: account.xuid || '',
-    user_type: account.type === 'microsoft' ? 'msa' : 'legacy',
+    user_type: account.type === 'microsoft' ? 'msa' : account.type === 'yggdrasil' ? 'mojang' : 'legacy',
     user_properties: '{}',
 
     // 版本
@@ -138,6 +139,19 @@ export function launchGame(
   }
 
   const jvmArgs = buildJvmArgs(profile, versionJson, vars)
+
+  if (account.type === 'yggdrasil' && account.yggdrasilServer) {
+    const injectorJar = await ensureAuthlibInjector()
+    const prefetched = await getPrefetchedYggdrasilMetadata(account.yggdrasilServer)
+    jvmArgs.unshift(
+      '-Dauthlibinjector.noShowServerName',
+      `-javaagent:${injectorJar}=${account.yggdrasilServer}`
+    )
+    if (prefetched) {
+      jvmArgs.unshift(`-Dauthlibinjector.yggdrasil.prefetched=${prefetched}`)
+    }
+  }
+
   const gameArgs = buildGameArgs(versionJson, vars)
 
   const finalArgs = [

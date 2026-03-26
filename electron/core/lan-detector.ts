@@ -10,7 +10,9 @@ const LAN_BROADCAST_PORT = 4445
 const MOTD_REGEX = /\[MOTD\](.*?)\[\/MOTD\]\[AD\](\d+)\[\/AD\]/
 const LOG_PORT_PATTERNS = [
   /Local game hosted on port\s+(\d+)/i,
-  /Started serving on\s+(\d+)/i,
+  /Started serving on(?:.*?[:\s])(\d{2,5})/i,
+  /LAN server.*?port(?:\s+is|\s*[:=])\s*(\d{2,5})/i,
+  /Hosting.*?LAN.*?on(?:\s+address)?(?:.*?[:\s])(\d{2,5})/i,
   /Publishing.*?LAN.*?port\s+(\d+)/i,
   /对局域网开放.*?(\d{2,5})/i,
   /局域网.*?端口.*?(\d{2,5})/i,

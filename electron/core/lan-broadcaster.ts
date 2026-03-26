@@ -34,13 +34,14 @@ function toBroadcastAddress(address: string, netmask: string): string | null {
 }
 
 function collectAnnouncementTargets(): string[] {
-  const targets = new Set<string>([MC_LAN_MULTICAST, '255.255.255.255'])
+  const targets = new Set<string>([MC_LAN_MULTICAST, '255.255.255.255', '127.0.0.1'])
 
   const interfaces = os.networkInterfaces()
   for (const iface of Object.values(interfaces)) {
     if (!iface) continue
     for (const info of iface) {
       if (info.family !== 'IPv4' || info.internal || !info.address || !info.netmask) continue
+      targets.add(info.address)
       const broadcast = toBroadcastAddress(info.address, info.netmask)
       if (broadcast) targets.add(broadcast)
     }
@@ -86,6 +87,7 @@ export function startLanBroadcast(id: string, port: number, motd: string): void 
 
     // 立即发送一次
     sendAnnouncement(socket, message)
+    setTimeout(() => sendAnnouncement(socket, message), 200)
   })
 
   const timer = setInterval(() => {

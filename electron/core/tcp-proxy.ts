@@ -30,10 +30,13 @@ export class HostProxy extends EventEmitter {
     this.mcPort = mcLanPort
   }
 
-  /** 初始化（不立即连接 MC 服务器，等待首次数据到达时按需建立） */
+  /** 初始化代理实例，等待客户端就绪后再建立上游连接 */
   start(): void {
-    // 连接延迟到 writeToMc() 首次调用时建立
-    // 避免 MC 服务器因长时间无握手数据而关闭空闲连接
+    // 上游连接在客户端本地 MC 真正连上后由 connectNow()/writeToMc() 建立
+  }
+
+  connectNow(): void {
+    this.ensureConnection()
   }
 
   /** 按需建立 / 重建到 MC 服务器的 TCP 连接 */
@@ -68,12 +71,17 @@ export class HostProxy extends EventEmitter {
     }
   }
 
+  /** 主动关闭当前上游连接，供客户端重连时重置协议状态 */
+  resetConnection(): void {
+    if (!this.socket) return
+    const socket = this.socket
+    this.socket = null
+    socket.destroy()
+  }
+
   destroy(): void {
     this.destroyed = true
-    if (this.socket) {
-      this.socket.destroy()
-      this.socket = null
-    }
+    this.resetConnection()
     this.removeAllListeners()
   }
 }
@@ -195,6 +203,14 @@ export async function createClientProxy(proxyId: string): Promise<{ proxy: Clien
 
 export function getHostProxy(proxyId: string): HostProxy | undefined {
   return hostProxies.get(proxyId)
+}
+
+export function resetHostProxy(proxyId: string): void {
+  hostProxies.get(proxyId)?.resetConnection()
+}
+
+export function connectHostProxy(proxyId: string): void {
+  hostProxies.get(proxyId)?.connectNow()
 }
 
 export function getClientProxy(proxyId: string): ClientProxy | undefined {

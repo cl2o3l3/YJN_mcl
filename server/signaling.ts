@@ -710,16 +710,16 @@ function handleMessage(peer: Peer, raw: string) {
           hostId: room.currentHostId,
           hostName: hostPeer?.name || 'Unknown',
           mcPort: room.currentHostPort || undefined,
-          worldMeta: room.worldMeta,
           roomPinned: room.pinned,
+          worldMeta: room.worldMeta,
           snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
         })
       } else {
         sendTo(peer.ws, {
           type: 'host-info',
           hostId: null,
-          worldMeta: room.worldMeta,
           roomPinned: room.pinned,
+          worldMeta: room.worldMeta,
           snapshot: room.latestSnapshot ? publicSnapshot(room.latestSnapshot) : null,
         })
       }
@@ -1038,7 +1038,6 @@ setInterval(() => {
       const expiredSnapshot = room.latestSnapshot
       room.latestSnapshot = undefined
       void deleteSnapshot(expiredSnapshot)
-      schedulePersistedStateWrite()
     }
 
     if (room.type === 'persistent' && !room.pinned && room.peers.size === 0 && room.emptyAt) {

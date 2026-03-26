@@ -321,7 +321,11 @@ async function onPickInstance(profile: GameProfile) {
     }
   }
 
-  await doInstall(version, file, selectedDir)
+  const installRoot = selectedDir.replace(/[\\/]+$/, '').toLowerCase().endsWith(`\\${resourceSubdir(type)}`)
+    ? selectedDir.slice(0, -resourceSubdir(type).length - 1)
+    : selectedDir
+
+  await doInstall(version, file, installRoot)
   pendingModInstall.value = null
 }
 

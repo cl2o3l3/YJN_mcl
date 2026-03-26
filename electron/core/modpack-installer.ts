@@ -4,7 +4,7 @@ import unzipper from 'unzipper'
 import { downloadFile, downloadBatch } from './download'
 import { installModLoader } from './modloader-manager'
 import { getFileInfoBatch } from './curseforge-api'
-import { getVersionJson } from './version-manager'
+import { getVersionJson, getVersionPaths } from './version-manager'
 import { collectLibraryTasks, collectNativeTasks, collectClientTask, extractNatives } from './library-manager'
 import { collectAssetTasks } from './asset-manager'
 import type { ModLoaderInfo, DownloadTask } from '../../src/types'
@@ -143,7 +143,7 @@ export async function installModpack(
   const librariesDir = path.join(instanceDir, 'libraries')
   const libTasks = collectLibraryTasks(versionJson, librariesDir)
   const nativeTasks = collectNativeTasks(versionJson, librariesDir)
-  const clientTask = collectClientTask(versionJson, path.join(instanceDir, 'versions'))
+  const clientTask = collectClientTask(versionJson, instanceDir)
   const gameTasks = [...libTasks, ...nativeTasks]
   if (clientTask) gameTasks.push(clientTask)
   const assetTasks = await collectAssetTasks(versionJson, instanceDir)
@@ -194,7 +194,7 @@ export async function installModpack(
   // 7. 提取 natives
   setStep(5, 'running')
   emitSteps('installing-game', '正在提取 Natives...')
-  const nativesDir = path.join(instanceDir, 'versions', mcVersion, 'natives')
+  const nativesDir = getVersionPaths(instanceDir, versionJson.id).nativesDir
   await extractNatives(versionJson, librariesDir, nativesDir)
   setStep(5, 'done')
 

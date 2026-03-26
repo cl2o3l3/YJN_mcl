@@ -445,8 +445,22 @@ function playerDisplayName(): string {
 
 function copyLocalAddr(port: number) {
   if (port > 0) {
-    navigator.clipboard.writeText(`localhost:${port}`)
+    navigator.clipboard.writeText(`127.0.0.1:${port}`)
   }
+}
+
+async function handleToggleSharedWorldPinned() {
+  try {
+    await sw.setRoomPinned(!sw.roomPinned)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    notifsStore.push('error', `切换常驻模式失败: ${msg}`)
+  }
+}
+
+function handleRemoveSharedWorld(roomCode: string) {
+  sw.removeWorldFromList(roomCode)
+  if (swJoinCode.value === roomCode) swJoinCode.value = ''
 }
 
 function copyAddr() {
@@ -643,7 +657,7 @@ function rttClass(rtt: number): string {
             <h3>✅ 已连接</h3>
             <p class="text-muted mb">服务器已自动显示在 MC 多人游戏列表，直接加入即可。</p>
             <div class="connect-addr" @click="copyAddr" title="点击复制">
-              <code>localhost:{{ mp.localPort }}</code>
+              <code>127.0.0.1:{{ mp.localPort }}</code>
               <span class="copy-hint">📋</span>
             </div>
           </div>
@@ -855,7 +869,7 @@ function rttClass(rtt: number): string {
             <h3>✅ 已连接</h3>
             <p class="text-muted mb">服务器已自动显示在 MC 多人游戏列表。</p>
             <div class="connect-addr" @click="copyAddr" title="点击复制">
-              <code>localhost:{{ mp.localPort }}</code>
+              <code>127.0.0.1:{{ mp.localPort }}</code>
               <span class="copy-hint">📋</span>
             </div>
           </div>
@@ -950,10 +964,13 @@ function rttClass(rtt: number): string {
           <div v-for="w in sw.worlds" :key="w.roomCode" class="sw-world-card" @click="swJoinCode = w.roomCode; swTab = 'join'">
             <div class="sw-world-icon">🌍</div>
             <div class="sw-world-info">
-              <span class="sw-world-name">{{ w.worldName }}</span>
+              <span class="sw-world-name">{{ w.worldName }} <span v-if="w.pinned" class="sw-pinned-tag">常驻</span></span>
               <span class="text-muted text-xs">{{ w.mcVersion }} · {{ formatWorldLoader(w.modLoader) }} · {{ w.roomCode }}</span>
             </div>
-            <span class="mode-arrow">›</span>
+            <div class="sw-world-actions">
+              <button class="btn-copy btn-delete-world" @click.stop="handleRemoveSharedWorld(w.roomCode)">删除</button>
+              <span class="mode-arrow">›</span>
+            </div>
           </div>
         </div>
 
@@ -1008,6 +1025,7 @@ function rttClass(rtt: number): string {
                 <span class="sw-role-badge" :class="sw.isHost ? 'role-host' : 'role-client'">
                   {{ sw.isHost ? '👑 主机' : '🎮 客户端' }}
                 </span>
+                <span v-if="sw.roomPinned" class="sw-role-badge role-pinned">常驻</span>
               </div>
             </div>
             <div v-if="sw.currentWorld?.mcVersion" class="sw-meta text-muted text-xs">
@@ -1050,10 +1068,10 @@ function rttClass(rtt: number): string {
             <h3>✅ 已连接</h3>
             <p class="text-muted mb">如果 Forge 多人列表没有自动出现服务器，可以直接连接本地代理地址。</p>
             <div class="connect-addr" @click="copyLocalAddr(sw.localPort)" title="点击复制">
-              <code>localhost:{{ sw.localPort }}</code>
+              <code>127.0.0.1:{{ sw.localPort }}</code>
               <span class="copy-hint">📋</span>
             </div>
-            <p class="text-muted text-xs mt-sm">也可使用 127.0.0.1:{{ sw.localPort }}</p>
+            <p class="text-muted text-xs mt-sm">点击即可复制，回到 MC 多人游戏里用“直接连接”输入这个地址。</p>
           </div>
 
           <!-- 玩家列表 -->
@@ -1104,6 +1122,9 @@ function rttClass(rtt: number): string {
             <h3>主机控制</h3>
             <p class="text-muted text-xs">你的 MC 客户端正在托管局域网世界。退出游戏时会自动迁移主机。</p>
             <div class="sw-controls mt">
+              <button class="btn-secondary" @click="handleToggleSharedWorldPinned">
+                {{ sw.roomPinned ? '取消常驻模式' : '设为常驻模式' }}
+              </button>
               <button class="btn-secondary" @click="handleLeaveSharedWorld('transfer')" :disabled="swLeaving">
                 {{ swLeaving ? '处理中...' : '🔄 移交房主并离开' }}
               </button>
@@ -1573,6 +1594,14 @@ h4 { font-size: 14px; margin-bottom: 4px; }
 .sw-world-icon { font-size: 24px; flex-shrink: 0; }
 .sw-world-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .sw-world-name { font-size: 14px; font-weight: 600; }
+.sw-world-actions { display: flex; align-items: center; gap: 8px; }
+.sw-pinned-tag {
+  display: inline-flex; align-items: center; margin-left: 6px;
+  padding: 1px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent); font-size: 11px; font-weight: 600;
+}
+.btn-delete-world { opacity: 0.8; }
 
 .sw-form { display: flex; flex-direction: column; gap: 10px; }
 .sw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
@@ -1596,6 +1625,7 @@ h4 { font-size: 14px; margin-bottom: 4px; }
 }
 .role-host { background: rgba(241, 196, 15, 0.18); color: #f1c40f; }
 .role-client { background: rgba(78, 204, 163, 0.18); color: var(--accent); }
+.role-pinned { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .server-running { background: rgba(46, 204, 113, 0.15); color: #27ae60; }
 .server-starting { background: rgba(241, 196, 15, 0.15); color: #f39c12; }
 .server-downloading { background: rgba(52, 152, 219, 0.15); color: #3498db; }

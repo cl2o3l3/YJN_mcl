@@ -8,6 +8,41 @@ import { getDefaultMinecraftDir } from './platform'
 
 let cachedManifest: VersionManifest | null = null
 
+function getStandardVersionPaths(gameDir: string, versionId: string) {
+  const versionDir = path.join(gameDir, 'versions', versionId)
+  return {
+    versionDir,
+    jsonPath: path.join(versionDir, `${versionId}.json`),
+    jarPath: path.join(versionDir, `${versionId}.jar`),
+    nativesDir: path.join(versionDir, 'natives')
+  }
+}
+
+function getEmbeddedVersionPaths(gameDir: string, versionId: string) {
+  return {
+    versionDir: gameDir,
+    jsonPath: path.join(gameDir, `${versionId}.json`),
+    jarPath: path.join(gameDir, `${versionId}.jar`),
+    nativesDir: path.join(gameDir, 'natives', versionId)
+  }
+}
+
+export function hasEmbeddedVersionLayout(gameDir: string, versionId: string): boolean {
+  const embedded = getEmbeddedVersionPaths(gameDir, versionId)
+  return fs.existsSync(embedded.jsonPath) || fs.existsSync(embedded.jarPath)
+}
+
+export function getVersionPaths(gameDir: string, versionId: string) {
+  return hasEmbeddedVersionLayout(gameDir, versionId)
+    ? getEmbeddedVersionPaths(gameDir, versionId)
+    : getStandardVersionPaths(gameDir, versionId)
+}
+
+export function hasLocalVersion(gameDir: string, versionId: string): boolean {
+  const { jsonPath } = getVersionPaths(gameDir, versionId)
+  return fs.existsSync(jsonPath)
+}
+
 /** 获取版本清单 (带本地缓存) */
 export async function getVersionManifest(forceRefresh = false): Promise<VersionManifest> {
   const cacheFile = path.join(getDefaultMinecraftDir(), 'version_manifest_v2.json')
@@ -42,13 +77,13 @@ export async function getVersionList(type?: 'release' | 'snapshot'): Promise<Ver
 
 /** 获取并解析版本 JSON (支持 inheritsFrom 合并) */
 export async function getVersionJson(versionId: string, gameDir: string): Promise<VersionJson> {
-  const versionDir = path.join(gameDir, 'versions', versionId)
-  const jsonPath = path.join(versionDir, `${versionId}.json`)
+  const standardPaths = getStandardVersionPaths(gameDir, versionId)
+  const localPaths = getVersionPaths(gameDir, versionId)
 
   let json: VersionJson
 
-  if (fs.existsSync(jsonPath)) {
-    json = JSON.parse(await fsp.readFile(jsonPath, 'utf-8'))
+  if (fs.existsSync(localPaths.jsonPath)) {
+    json = JSON.parse(await fsp.readFile(localPaths.jsonPath, 'utf-8'))
   } else {
     // 从清单查找 URL
     const manifest = await getVersionManifest()
@@ -58,8 +93,8 @@ export async function getVersionJson(versionId: string, gameDir: string): Promis
       throw new Error(`版本 ${versionId} 未在清单中找到,且本地不存在`)
     }
     const url = mirrorVersionJsonUrl(entry.url)
-    await downloadFile(url, jsonPath, entry.sha1)
-    json = JSON.parse(await fsp.readFile(jsonPath, 'utf-8'))
+    await downloadFile(url, standardPaths.jsonPath, entry.sha1)
+    json = JSON.parse(await fsp.readFile(standardPaths.jsonPath, 'utf-8'))
   }
 
   // 处理 inheritsFrom (Fabric/Forge 等 mod 加载器)
@@ -96,16 +131,28 @@ function mergeVersionJson(parent: VersionJson, child: VersionJson): VersionJson 
 
 /** 获取本地已安装的版本列表 */
 export async function getLocalVersions(gameDir: string): Promise<string[]> {
+  const versions = new Set<string>()
   const versionsDir = path.join(gameDir, 'versions')
-  if (!fs.existsSync(versionsDir)) return []
 
-  const dirs = await fsp.readdir(versionsDir, { withFileTypes: true })
-  const versions: string[] = []
-  for (const d of dirs) {
-    if (d.isDirectory()) {
+  if (fs.existsSync(versionsDir)) {
+    const dirs = await fsp.readdir(versionsDir, { withFileTypes: true })
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue
       const jsonFile = path.join(versionsDir, d.name, `${d.name}.json`)
-      if (fs.existsSync(jsonFile)) versions.push(d.name)
+      if (fs.existsSync(jsonFile)) versions.add(d.name)
     }
   }
-  return versions
+
+  if (fs.existsSync(gameDir)) {
+    const entries = await fsp.readdir(gameDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const versionId = entry.name.slice(0, -5)
+      if (!versionId) continue
+      const siblingJar = path.join(gameDir, `${versionId}.jar`)
+      if (fs.existsSync(siblingJar)) versions.add(versionId)
+    }
+  }
+
+  return [...versions]
 }
