@@ -44,20 +44,33 @@ export class HostProxy extends EventEmitter {
     if (this.destroyed) return
     if (this.socket && !this.socket.destroyed) return
 
-    this.socket = net.createConnection({ host: '127.0.0.1', port: this.mcPort }, () => {
+    const socket = net.createConnection({ host: '127.0.0.1', port: this.mcPort }, () => {
+      clearTimeout(connectTimer)
       this.emit('mc-connected', this.proxyId)
     })
+    this.socket = socket
 
-    this.socket.on('data', (data: Buffer) => {
+    const connectTimer = setTimeout(() => {
+      if (this.socket === socket && !socket.destroyed && socket.connecting) {
+        this.emit('error', this.proxyId, `连接房主本地 MC 超时 (127.0.0.1:${this.mcPort})`)
+        socket.destroy()
+      }
+    }, 10000)
+
+    socket.on('data', (data: Buffer) => {
       this.emit('data-from-mc', this.proxyId, data)
     })
 
-    this.socket.on('close', () => {
-      this.socket = null
+    socket.on('close', () => {
+      clearTimeout(connectTimer)
+      if (this.socket === socket) {
+        this.socket = null
+      }
       this.emit('mc-disconnected', this.proxyId)
     })
 
-    this.socket.on('error', (err: Error) => {
+    socket.on('error', (err: Error) => {
+      clearTimeout(connectTimer)
       this.emit('error', this.proxyId, err.message)
     })
   }

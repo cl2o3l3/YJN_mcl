@@ -13,6 +13,7 @@ export interface PeerConnection {
   pc: RTCPeerConnection | null
   send(data: Uint8Array): void
   onData(cb: (data: Uint8Array) => void): void
+  onClose(cb: (reason: string) => void): void
   close(): void
 }
 
@@ -268,24 +269,80 @@ function attemptWebRTC(
 function wrapWebRTC(result: WebRTCResult, tier: ConnectionTier): PeerConnection {
   const { pc, dc } = result
   const dataCallbacks: ((data: Uint8Array) => void)[] = []
+  const closeCallbacks: ((reason: string) => void)[] = []
+  let closed = false
+  let disconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+  function notifyClose(reason: string) {
+    if (closed) return
+    closed = true
+    if (disconnectTimer) {
+      clearTimeout(disconnectTimer)
+      disconnectTimer = null
+    }
+    closeCallbacks.forEach(cb => cb(reason))
+  }
 
   dc.onmessage = (e) => {
     const data = new Uint8Array(e.data as ArrayBuffer)
     dataCallbacks.forEach(cb => cb(data))
   }
 
+  dc.onclose = () => {
+    notifyClose('DataChannel closed')
+  }
+
+  dc.onerror = () => {
+    notifyClose('DataChannel error')
+  }
+
+  pc.onconnectionstatechange = () => {
+    const state = pc.connectionState
+    if (state === 'connected') {
+      if (disconnectTimer) {
+        clearTimeout(disconnectTimer)
+        disconnectTimer = null
+      }
+      return
+    }
+
+    if (state === 'disconnected') {
+      if (!disconnectTimer) {
+        disconnectTimer = setTimeout(() => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+            notifyClose(`PeerConnection ${pc.connectionState}`)
+          }
+        }, 5000)
+      }
+      return
+    }
+
+    if (state === 'failed' || state === 'closed') {
+      notifyClose(`PeerConnection ${state}`)
+    }
+  }
+
   return {
     tier,
     pc,
     send(data: Uint8Array) {
-      if (dc.readyState === 'open') {
+      if (!closed && dc.readyState === 'open') {
         dc.send(new Uint8Array(data) as unknown as ArrayBufferView<ArrayBuffer>)
       }
     },
     onData(cb) {
       dataCallbacks.push(cb)
     },
+    onClose(cb) {
+      closeCallbacks.push(cb)
+    },
     close() {
+      closed = true
+      if (disconnectTimer) {
+        clearTimeout(disconnectTimer)
+        disconnectTimer = null
+      }
+      closeCallbacks.length = 0
       dc.close()
       pc.close()
       dataCallbacks.length = 0
@@ -336,6 +393,9 @@ function createRelayConnection(peerId: string, signaling: SignalingClient): Peer
     },
     onData(cb) {
       dataCallbacks.push(cb)
+    },
+    onClose() {
+      // 信令中继当前没有独立关闭回调，交由上层信令状态处理
     },
     close() {
       signaling.off('relay-data', handler)
@@ -412,6 +472,9 @@ function connectStandaloneRelay(
             },
             onData(cb) {
               dataCallbacks.push(cb)
+            },
+            onClose() {
+              // 独立 WS 中继当前没有额外关闭回调，依赖 ws.onclose
             },
             close() {
               ws.close()

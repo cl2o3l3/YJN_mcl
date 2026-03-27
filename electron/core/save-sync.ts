@@ -330,7 +330,7 @@ export async function unpackSaveFromBuffer(
   data: Buffer,
   gameDir: string,
   worldName: string
-): Promise<void> {
+): Promise<string> {
   const tmpDir = path.join(gameDir, '.save-sync-tmp')
   await fsp.mkdir(tmpDir, { recursive: true })
   const tmpPath = path.join(tmpDir, `${worldName}-${Date.now()}.tar.gz`)
@@ -341,4 +341,5 @@ export async function unpackSaveFromBuffer(
 
   // 清理临时文件
   await fsp.unlink(tmpPath).catch(() => {})
+  return targetDir
 }

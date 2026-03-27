@@ -53,6 +53,8 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
   let manualApplyAnswer: ((code: string) => Promise<void>) | null = null
   let manualWaitOpen: (() => Promise<void>) | null = null
   let cleanupFns: (() => void)[] = []
+  const dataBridgeCleanupByProxy = new Map<string, () => void>()
+  const lifecycleBridgeCleanupByProxy = new Map<string, () => void>()
 
   const isHost = computed(() => role.value === 'host')
   const isGuest = computed(() => role.value === 'guest')
@@ -116,9 +118,17 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     return signaling.connect(settings.signalingServer)
   }
 
+  function ensureFreshSession() {
+    if (state.value !== 'idle' || signaling || webrtcManager || cleanupFns.length > 0) {
+      addLog('检测到上一次联机会话残留，正在清理...')
+      cleanup()
+    }
+  }
+
   // ========== 创建房间 (房主) ==========
 
   async function createRoom(name: string, gameVersion: string = ''): Promise<void> {
+    ensureFreshSession()
     error.value = ''
     state.value = 'connecting'
     playerName.value = name
@@ -134,12 +144,14 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
     // 等待 room-created
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        signaling?.off('room-created', onRoomCreated)
         reject(new Error('创建房间超时'))
         state.value = 'idle'
       }, 10000)
 
-      signaling!.on('room-created', (msg: any) => {
+      const onRoomCreated = (msg: any) => {
         clearTimeout(timeout)
+        signaling?.off('room-created', onRoomCreated)
         roomId.value = msg.roomId
         roomCode.value = msg.roomCode
         role.value = 'host'
@@ -148,7 +160,9 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         addLog(`房间已创建, 房间码: ${msg.roomCode}`)
         setupHostListeners()
         resolve()
-      })
+      }
+
+      signaling!.on('room-created', onRoomCreated)
 
       signaling!.createRoom(name, gameVersion)
     })
@@ -157,6 +171,7 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
   // ========== 加入房间 (客人) ==========
 
   async function joinRoom(code: string, name: string): Promise<void> {
+    ensureFreshSession()
     error.value = ''
     state.value = 'connecting'
     playerName.value = name
@@ -171,12 +186,16 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        signaling?.off('room-joined', onRoomJoined)
+        signaling?.off('error', onJoinError)
         reject(new Error('加入房间超时'))
         state.value = 'idle'
       }, 10000)
 
-      signaling!.on('room-joined', async (msg: any) => {
+      const onRoomJoined = async (msg: any) => {
         clearTimeout(timeout)
+        signaling?.off('room-joined', onRoomJoined)
+        signaling?.off('error', onJoinError)
         roomId.value = msg.roomId
         roomCode.value = code
         role.value = 'guest'
@@ -193,13 +212,18 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         }
 
         resolve()
-      })
+      }
 
-      signaling!.on('error', (msg: any) => {
+      const onJoinError = (msg: any) => {
         clearTimeout(timeout)
+        signaling?.off('room-joined', onRoomJoined)
+        signaling?.off('error', onJoinError)
         reject(new Error(msg.message))
         state.value = 'idle'
-      })
+      }
+
+      signaling!.on('room-joined', onRoomJoined)
+      signaling!.on('error', onJoinError)
 
       signaling!.joinRoom(code, name)
     })
@@ -344,6 +368,31 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
       addLog(`连接 ${peerId.substring(0, 6)} 失败: ${err}`)
     })
 
+    webrtcManager.on('peer-disconnected', async (peerId: string, reason: string) => {
+      addLog(`连接 ${peerId.substring(0, 6)} 已断开: ${reason}`)
+      await window.api.p2p.destroyProxy(peerId).catch(() => {})
+      if (role.value === 'guest') {
+        await window.api.p2p.stopLanBroadcast(peerId).catch(() => {})
+        localPort.value = 0
+        error.value = '联机连接已中断，请重新连接'
+      }
+    })
+
+    cleanupFns.push(window.api.p2p.onProxyError(async (peerId: string, proxyError: string) => {
+      addLog(`代理异常 (${peerId.substring(0, 6)}): ${proxyError}`)
+
+      if (role.value === 'host') {
+        webrtcManager?.sendToPeer(peerId, encodeP2PControl('proxy-failed', { reason: proxyError }))
+      }
+
+      if (role.value === 'guest') {
+        await window.api.p2p.stopLanBroadcast(peerId).catch(() => {})
+        await window.api.p2p.destroyProxy(peerId).catch(() => {})
+        localPort.value = 0
+        error.value = `代理异常: ${proxyError}`
+      }
+    }))
+
     // 监听来自信令的 offer (对于房主接收客人的 offer)
     signaling.on('offer', (msg: any) => {
       if (msg.fromPeerId) {
@@ -401,15 +450,22 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
   function setupDataBridge(proxyId: string) {
     // MC → WebRTC: 从本地 MC 收到数据, 发给 peer
+    dataBridgeCleanupByProxy.get(proxyId)?.()
     const unsub = window.api.p2p.onDataFromMc((id: string, data: Buffer) => {
       if (id === proxyId && webrtcManager) {
         webrtcManager.sendToPeer(proxyId, new Uint8Array(data))
       }
     })
-    cleanupFns.push(unsub)
+    const cleanup = () => {
+      unsub()
+      dataBridgeCleanupByProxy.delete(proxyId)
+    }
+    dataBridgeCleanupByProxy.set(proxyId, cleanup)
+    cleanupFns.push(cleanup)
   }
 
   function setupProxyLifecycleBridge(proxyId: string, send: (data: Uint8Array) => void) {
+    lifecycleBridgeCleanupByProxy.get(proxyId)?.()
     const unsubConnected = window.api.p2p.onMcConnected((id: string) => {
       if (id === proxyId) {
         send(encodeP2PControl('mc-client-connected'))
@@ -420,7 +476,13 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
         send(encodeP2PControl('mc-client-disconnected'))
       }
     })
-    cleanupFns.push(unsubConnected, unsubDisconnected)
+    const cleanup = () => {
+      unsubConnected()
+      unsubDisconnected()
+      lifecycleBridgeCleanupByProxy.delete(proxyId)
+    }
+    lifecycleBridgeCleanupByProxy.set(proxyId, cleanup)
+    cleanupFns.push(cleanup)
   }
 
   // ========== 手动交换模式 ==========
@@ -711,6 +773,8 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
     for (const fn of cleanupFns) fn()
     cleanupFns = []
+    dataBridgeCleanupByProxy.clear()
+    lifecycleBridgeCleanupByProxy.clear()
 
     state.value = 'idle'
     role.value = null

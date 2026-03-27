@@ -112,6 +112,22 @@ export class WebRTCManager {
         this.emit('data-from-peer', peerId, data)
       })
 
+      conn.onClose((reason) => {
+        if (this.connectionAttempts.get(peerId) !== attemptId || this.peers.get(peerId) !== managed) {
+          return
+        }
+
+        if (managed.rttInterval) {
+          clearInterval(managed.rttInterval)
+          managed.rttInterval = null
+        }
+
+        managed.connection = null
+        managed.state = 'disconnected'
+        this.emitPeerUpdate()
+        this.emit('peer-disconnected', peerId, reason)
+      })
+
       // RTT 心跳 (仅 WebRTC 直连/TURN, WS 中继不适用)
       if (conn.tier !== 'relay') {
         managed.rttInterval = setInterval(() => {

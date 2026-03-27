@@ -288,6 +288,11 @@ const api = {
       ipcRenderer.on('p2p:mcDisconnected', handler)
       return () => ipcRenderer.off('p2p:mcDisconnected', handler)
     },
+    onProxyError: (callback: (proxyId: string, error: string) => void) => {
+      const handler = (_: unknown, proxyId: string, error: string) => callback(proxyId, error)
+      ipcRenderer.on('p2p:proxyError', handler)
+      return () => ipcRenderer.off('p2p:proxyError', handler)
+    },
   },
 
   // ========== MC Server 管理 ==========
@@ -327,7 +332,7 @@ const api = {
     readArchive: (archivePath: string) =>
       ipcRenderer.invoke('save:readArchive', archivePath) as Promise<ArrayBuffer>,
     unpackBuffer: (data: ArrayBuffer, gameDir: string, worldName: string) =>
-      ipcRenderer.invoke('save:unpackBuffer', data, gameDir, worldName) as Promise<void>,
+      ipcRenderer.invoke('save:unpackBuffer', data, gameDir, worldName) as Promise<string>,
   },
 
   snapshot: {

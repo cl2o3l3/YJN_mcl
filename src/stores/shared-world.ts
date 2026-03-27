@@ -97,6 +97,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
   let hostLanReadyPeerId = ''
   let hostLanActivatedPeerId = ''
   let canRegisterAsHostFromLan = false
+  const dataBridgeCleanupByProxy = new Map<string, () => void>()
+  const lifecycleBridgeCleanupByProxy = new Map<string, () => void>()
+  const saveReceiverByPeer = new WeakSet<RTCPeerConnection>()
 
   // 房间成员 (信令层级，含所有已加入玩家)
   const roomMembers = ref<{ id: string, name: string }[]>([])
@@ -538,9 +541,26 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
 
   setupLaunchExitListener()
 
+  async function ensureFreshSharedWorldSession() {
+    if (
+      electionState.value !== 'idle'
+      || signaling
+      || election
+      || webrtcManager
+      || cleanupFns.length > 0
+      || roomCode.value
+      || myPeerId.value
+    ) {
+      addLog('检测到上一次共享世界会话残留，正在清理...')
+      await cleanupSession(false)
+      resetState()
+    }
+  }
+
   async function createWorld(config: {
     playerName: string
   }): Promise<string> {
+    await ensureFreshSharedWorldSession()
     error.value = ''
 
     try {
@@ -585,6 +605,7 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     playerName: string
     roomCode: string
   }): Promise<void> {
+    await ensureFreshSharedWorldSession()
     error.value = ''
 
     try {
@@ -892,6 +913,28 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       addLog(`连接 ${peerId.substring(0, 6)} 失败: ${err}`)
     })
 
+    webrtcManager.on('peer-disconnected', async (peerId: string, reason: string) => {
+      addLog(`Peer ${peerId.substring(0, 6)} 已断开: ${reason}`)
+      await window.api.p2p.destroyProxy(peerId).catch(() => {})
+      if (myRole.value === 'client' && hostInfo.value?.peerId === peerId) {
+        await window.api.p2p.stopLanBroadcast(peerId).catch(() => {})
+        localPort.value = 0
+      }
+    })
+
+    cleanupFns.push(window.api.p2p.onProxyError(async (peerId: string, proxyError: string) => {
+      addLog(`代理异常 (${peerId.substring(0, 6)}): ${proxyError}`)
+
+      if (myRole.value === 'host') {
+        webrtcManager?.sendToPeer(peerId, encodeP2PControl('proxy-failed', { reason: proxyError }))
+      }
+
+      if (myRole.value === 'client' && hostInfo.value?.peerId === peerId) {
+        await clearClientLanState(peerId, true)
+        error.value = `代理异常: ${proxyError}`
+      }
+    }))
+
     // 监听来自信令的 offer (房主接收客人的 offer)
     signaling.on('offer', (msg: any) => {
       if (msg.fromPeerId) {
@@ -1076,15 +1119,22 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
    * MC ↔ WebRTC 数据桥接
    */
   function setupDataBridge(proxyId: string) {
+    dataBridgeCleanupByProxy.get(proxyId)?.()
     const unsub = window.api.p2p.onDataFromMc((id: string, data: Buffer) => {
       if (id === proxyId && webrtcManager) {
         webrtcManager.sendToPeer(proxyId, new Uint8Array(data))
       }
     })
-    cleanupFns.push(unsub)
+    const cleanup = () => {
+      unsub()
+      dataBridgeCleanupByProxy.delete(proxyId)
+    }
+    dataBridgeCleanupByProxy.set(proxyId, cleanup)
+    cleanupFns.push(cleanup)
   }
 
   function setupProxyLifecycleBridge(proxyId: string, send: (data: Uint8Array) => void) {
+    lifecycleBridgeCleanupByProxy.get(proxyId)?.()
     const unsubConnected = window.api.p2p.onMcConnected((id: string) => {
       if (id === proxyId) {
         send(encodeP2PControl('mc-client-connected'))
@@ -1095,7 +1145,13 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
         send(encodeP2PControl('mc-client-disconnected'))
       }
     })
-    cleanupFns.push(unsubConnected, unsubDisconnected)
+    const cleanup = () => {
+      unsubConnected()
+      unsubDisconnected()
+      lifecycleBridgeCleanupByProxy.delete(proxyId)
+    }
+    lifecycleBridgeCleanupByProxy.set(proxyId, cleanup)
+    cleanupFns.push(cleanup)
   }
 
   /**
@@ -1103,6 +1159,9 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
    * 当主机迁移离开时，会通过 WebRTC DataChannel 发送存档
    */
   function setupSaveReceiver(pc: RTCPeerConnection) {
+    if (saveReceiverByPeer.has(pc)) return
+    saveReceiverByPeer.add(pc)
+
     const receiver = new SaveReceiver(
       (progress) => { transferProgress.value = progress },
       (success, err) => {
@@ -1121,8 +1180,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
       }
       const worldName = receivedWorldName || currentWorld.value?.worldName || 'shared-world'
       try {
-        await window.api.save.unpackBuffer(data, currentGameDir, worldName)
-        addLog(`✓ 存档已解包到 ${currentGameDir}/saves/${worldName}`)
+        const targetPath = await window.api.save.unpackBuffer(data, currentGameDir, worldName)
+        addLog(`✓ 存档已解包到 ${targetPath}`)
         // 更新 worldMeta 以便 tryAutoElection 能找到这个存档
         if (election) election.setWorldMeta({
           worldName,
@@ -1166,6 +1225,8 @@ export const useSharedWorldStore = defineStore('shared-world', () => {
     } finally {
       for (const fn of cleanupFns) fn()
       cleanupFns = []
+      dataBridgeCleanupByProxy.clear()
+      lifecycleBridgeCleanupByProxy.clear()
       webrtcManager?.destroy()
       webrtcManager = null
       election?.destroy()
