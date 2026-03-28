@@ -307,9 +307,9 @@ async function handleSWLaunch() {
 }
 
 // 回到主菜单
-function goHome() {
+async function goHome() {
   if (mp.state !== 'idle') {
-    mp.leaveRoom()
+    await mp.leaveRoom()
   }
   selectedMode.value = null
   modeAction.value = 'menu'

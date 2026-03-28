@@ -744,8 +744,8 @@ export const useMultiplayerStore = defineStore('multiplayer', () => {
 
   // ========== 离开房间 ==========
 
-  function leaveRoom(): void {
-    signaling?.leaveRoom()
+  async function leaveRoom(): Promise<void> {
+    await signaling?.leaveRoom()
     cleanup()
   }
 

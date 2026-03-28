@@ -214,9 +214,31 @@ export class SignalingClient {
     this.lastRoomId = roomId
   }
 
-  leaveRoom(): void {
+  leaveRoom(timeoutMs = 1500): Promise<void> {
     this.lastRoomId = ''
-    this.send({ type: 'leave-room' })
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer)
+        this.off('left-room', onLeftRoom)
+        this.off('error', onError)
+        resolve()
+      }
+
+      const onLeftRoom = () => finish()
+      const onError = () => finish()
+
+      const timer = setTimeout(() => {
+        finish()
+      }, timeoutMs)
+
+      this.on('left-room', onLeftRoom)
+      this.on('error', onError)
+      this.send({ type: 'leave-room' })
+    })
   }
 
   sendOffer(targetPeerId: string, sdp: RTCSessionDescriptionInit): void {

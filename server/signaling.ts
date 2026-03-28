@@ -495,6 +495,7 @@ function handleMessage(peer: Peer, raw: string) {
     }
 
     case 'leave-room': {
+      sendTo(peer.ws, { type: 'left-room' })
       removePeerFromRoom(peer)
       break
     }

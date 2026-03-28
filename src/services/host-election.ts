@@ -248,7 +248,7 @@ export class HostElection {
     if (this.myRole === 'host') {
       await this.migrateHostAndLeave()
     } else {
-      this.signaling.leaveRoom()
+      await this.signaling.leaveRoom()
       this.cleanup()
     }
   }
@@ -261,7 +261,7 @@ export class HostElection {
     this.setState('transferring')
 
     if (!this.worldMeta) {
-      this.signaling.leaveRoom()
+      await this.signaling.leaveRoom()
       this.cleanup()
       return
     }
@@ -301,11 +301,11 @@ export class HostElection {
       this.signaling.unregisterHost()
       this.events.onLog('已移交主机权限')
 
-      this.signaling.leaveRoom()
+      await this.signaling.leaveRoom()
       this.cleanup()
     } catch (e: any) {
       this.events.onLog(`主机迁移失败: ${e.message}`)
-      this.signaling.leaveRoom()
+      await this.signaling.leaveRoom()
       this.cleanup()
     }
   }
